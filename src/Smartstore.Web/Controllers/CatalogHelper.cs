@@ -214,7 +214,234 @@ public partial class CatalogHelper
         {
             var manufacturerFileIds = brands
                 .Select(x => x.Manufacturer.MediaFileId ?? 0)
-                .Where(x => x > 0)
+                .Where(x => x > 0);
+                
+            if (manufacturer == null)
+                return null;
+
+            var model = new BrandModel
+            {
+                Id = manufacturer.Id,
+                Name = _catalogSettings.ShowManufacturersNameAsDescription ? manufacturer.GetLocalized(x => x.Description) : manufacturer.GetLocalized(x => x.Name),
+                Description = manufacturer.GetLocalized(x => x.Description, detectEmptyHtml: true),
+                BottomDescription = manufacturer.GetLocalized(x => x.BottomDescription, detectEmptyHtml: true),
+                MetaKeywords = manufacturer.GetLocalized(x => x.MetaKeywords),
+                MetaDescription = manufacturer.GetLocalized(x => x.MetaDescription),
+                MetaTitle = manufacturer.GetLocalized(x => x.MetaTitle),
+                SeName = await manufacturer.GetActiveSlugAsync()
+            };
+
+            model.MetaProperties = await model.MapMetaPropertiesAsync();
+
+            return model;
+        }
+
+        public async Task<List<BrandOverviewModel>> PrepareBrandOverviewModelAsync(
+            ICollection<ProductManufacturer> brands,
+            IDictionary<int, BrandOverviewModel> cachedModels = null,
+            bool withPicture = false)
+        {
+            var model = new List<BrandOverviewModel>();
+            cachedModels ??= new Dictionary<int, BrandOverviewModel>();
+            IDictionary<int, MediaFileInfo> mediaFileLookup = null;
+
+            if (withPicture)
+            {
+                var manufacturerFileIds = brands
+                    .Select(x => x.Manufacturer.MediaFileId ?? 0)
+                    .Where(x => x > 0)
+                    .Distinct()
+                    .ToArray();
+
+                if (manufacturerFileIds.Length > 0)
+                {
+                    mediaFileLookup = (await _db.MediaFiles
+                        .AsNoTracking()
+                        .Where(x => manufacturerFileIds.Contains(x.Id))
+                        .ToListAsync())
+                        .Select(_mediaService.ConvertMediaFile)
+                        .ToDictionary(x => x.Id);
+                }
+
+            }
+
+            foreach (var pm in brands)
+            {
+                var manufacturer = pm.Manufacturer;
+
+                if (!cachedModels.TryGetValue(manufacturer.Id, out BrandOverviewModel item))
+                {
+                    item = new BrandOverviewModel
+                    {
+                        Id = manufacturer.Id,
+                        Name = manufacturer.GetLocalized(x => x.Name),
+                        Description = manufacturer.GetLocalized(x => x.Description, true),
+                        SeName = manufacturer.GetActiveSlug()
+                    };
+
+                    if (withPicture)
+                    {
+                        item.Image = await PrepareBrandImageModelAsync(manufacturer, item.Name, mediaFileLookup);
+                    }
+
+                    cachedModels.Add(item.Id, item);
+                }
+
+                model.Add(item);
+            }
+
+            return model;
+        }
+
+        public async Task<ImageModel> PrepareBrandImageModelAsync(Manufacturer brand, string localizedName, IDictionary<int, MediaFileInfo> fileLookup = null)
+        {
+            MediaFileInfo file = null;
+
+            if (fileLookup != null)
+            {
+                fileLookup.TryGetValue(brand.MediaFileId ?? 0, out file);
+            }
+            else
+            {
+                if (brand.MediaFile != null)
+                {
+                    file = _mediaService.ConvertMediaFile(brand.MediaFile);
+                }
+                else if (brand.MediaFileId.HasValue)
+                {
+                    file = await _mediaService.GetFileByIdAsync(brand.MediaFileId.Value, MediaLoadFlags.AsNoTracking);
+                }
+            }
+
+            var model = new ImageModel(file, _mediaSettings.ManufacturerThumbPictureSize)
+            {
+                Title = file?.File?.GetLocalized(x => x.Title)?.Value.NullEmpty() ?? T("Media.Manufacturer.ImageLinkTitleFormat", localizedName),
+                Alt = file?.File?.GetLocalized(x => x.Alt)?.Value.NullEmpty() ?? localizedName,
+                NoFallback = _catalogSettings.HideManufacturerDefaultPictures
+            };
+
+            _services.DisplayControl.Announce(file?.File);
+
+            return model;
+        }
+
+        public async Task<BrandNavigationModel> PrepareBrandNavigationModelAsync(int brandItemsToDisplay)
+        {
+            var storeId = _services.StoreContext.CurrentStore.Id;
+            var storeToken = QuerySettings.IgnoreMultiStore ? "0" : storeId.ToString();
+            var rolesToken = QuerySettings.IgnoreAcl ? "0" : _services.WorkContext.CurrentCustomer.GetRolesIdent();
+
+            var settingsKeyPart = string.Join(",",
+                _catalogSettings.ShowManufacturersOnHomepage,
+                _catalogSettings.ShowManufacturerPictures,
+                _catalogSettings.HideManufacturerDefaultPictures,
+                _catalogSettings.ShowManufacturersNameAsDescription,
+                _mediaSettings.ManufacturerThumbPictureSize).ToLower();
+
+            var cacheKey = string.Format(ModelCacheInvalidator.MANUFACTURER_NAVIGATION_MODEL_KEY,
+                settingsKeyPart,
+                _services.WorkContext.WorkingLanguage.Id,
+                storeToken,
+                rolesToken,
+                brandItemsToDisplay);
+
+            var cacheModel = await _services.CacheFactory.GetMemoryCache().GetAsync(cacheKey, async (o) =>
+            {
+                o.ExpiresIn(TimeSpan.FromHours(6));
+
+                var manufacturers = await _db.Manufacturers
+                    .AsNoTracking()
+                    .ApplyStandardFilter(false, _workContext.CurrentCustomer.GetRoleIds(), storeId)
+                    .Take(brandItemsToDisplay + 1)
+                    .ToListAsync();
+
+                var files = new Dictionary<int, MediaFileInfo>();
+
+                if (_catalogSettings.ShowManufacturerPictures)
+                {
+                    var fileIds = manufacturers
+                        .Select(x => x.MediaFileId ?? 0)
+                        .Where(x => x != 0)
+                        .Distinct()
+                        .ToArray();
+                    files = (await _mediaService.GetFilesByIdsAsync(fileIds)).ToDictionarySafe(x => x.Id);
+                }
+
+                var model = new BrandNavigationModel
+                {
+                    DisplayBrands = _catalogSettings.ShowManufacturersOnHomepage,
+                    DisplayImages = _catalogSettings.ShowManufacturerPictures,
+                    DisplayAllBrandsLink = manufacturers.Count > brandItemsToDisplay,
+                    HideBrandDefaultPictures = _catalogSettings.HideManufacturerDefaultPictures,
+                    BrandThumbImageSize = _mediaSettings.ManufacturerThumbPictureSize
+                };
+
+                if (model.DisplayAllBrandsLink)
+                {
+                    brandItemsToDisplay -= 1;
+                }
+
+                foreach (var manufacturer in manufacturers.Take(brandItemsToDisplay))
+                {
+                    files.TryGetValue(manufacturer.MediaFileId ?? 0, out var file);
+
+                    var name = _catalogSettings.ShowManufacturersNameAsDescription ? manufacturer.GetLocalized(x => x.Description) : manufacturer.GetLocalized(x => x.Name);
+
+                    model.Brands.Add(new BrandBriefInfoModel
+                    {
+                        Id = manufacturer.Id,
+                        Name = name,
+                        SeName = manufacturer.GetActiveSlug(),
+                        DisplayOrder = manufacturer.DisplayOrder,
+                        Image = new ImageModel(file, _mediaSettings.ManufacturerThumbPictureSize)
+                        {
+                            Alt = file?.File?.GetLocalized(x => x.Alt)?.Value.NullEmpty() ?? name,
+                            Title = file?.File?.GetLocalized(x => x.Title)?.Value.NullEmpty() ?? name,
+                            NoFallback = _catalogSettings.HideManufacturerDefaultPictures
+                        }
+                    });
+                }
+
+                return model;
+            });
+
+            return cacheModel;
+        }
+
+        #endregion
+
+        #region Category
+
+        public async Task<CategoryModel> PrepareCategoryModelAsync(Category category)
+        {
+            if (category == null)
+                return null;
+
+            var model = new CategoryModel
+            {
+                Id = category.Id,
+                Name = category.GetLocalized(x => x.Name),
+                FullName = category.GetLocalized(x => x.FullName),
+                Description = category.GetLocalized(x => x.Description, detectEmptyHtml: true),
+                BottomDescription = category.GetLocalized(x => x.BottomDescription, detectEmptyHtml: true),
+                MetaKeywords = category.GetLocalized(x => x.MetaKeywords),
+                MetaDescription = category.GetLocalized(x => x.MetaDescription),
+                MetaTitle = category.GetLocalized(x => x.MetaTitle),
+                SeName = await category.GetActiveSlugAsync()
+            };
+
+            model.MetaProperties = await model.MapMetaPropertiesAsync();
+
+            return model;
+        }
+
+        public async Task<List<CategorySummaryModel>> MapCategorySummaryModelAsync(IEnumerable<Category> categories, int thumbSize)
+        {
+            Guard.NotNull(categories, nameof(categories));
+
+            var fileIds = categories
+                .Select(x => x.MediaFileId ?? 0)
+                .Where(x => x != 0)
                 .Distinct()
                 .ToArray();
 

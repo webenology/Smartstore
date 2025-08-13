@@ -61,8 +61,10 @@ public class CatalogSettingsModel : ILocalizedModel<PriceSettingsLocalizedModel>
     [LocalizedDisplay("*ShowPopularProductTagsOnHomepage")]
     public bool ShowPopularProductTagsOnHomepage { get; set; }
 
-    [LocalizedDisplay("*ShowManufacturersOnHomepage")]
-    public bool ShowManufacturersOnHomepage { get; set; }
+        [LocalizedDisplay("*ShowManufacturersOnHomepage")]
+        public bool ShowManufacturersOnHomepage { get; set; }
+        [LocalizedDisplay("*ShowManufacturersNameAsDescription")]
+        public bool ShowManufacturersNameAsDescription { get; set; }
 
     [LocalizedDisplay("*ShowManufacturersInOffCanvas")]
     public bool ShowManufacturersInOffCanvas { get; set; }

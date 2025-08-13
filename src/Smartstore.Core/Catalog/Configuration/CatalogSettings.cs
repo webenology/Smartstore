@@ -233,10 +233,15 @@ public class CatalogSettings : ISettings
     /// </summary>
     public bool ShowManufacturersOnHomepage { get; set; } = true;
 
-    /// <summary>
-    /// Gets or sets a value indicating whether to show manufacturers in offcanvas menu
-    /// </summary>
-    public bool ShowManufacturersInOffCanvas { get; set; } = true;
+        /// <summary>
+        /// Gets or sets a value indicating whether to show manufacturers name from name or description
+        /// </summary>
+        public bool ShowManufacturersNameAsDescription { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether to show manufacturers in offcanvas menu
+        /// </summary>
+        public bool ShowManufacturersInOffCanvas { get; set; } = true;
 
     /// <summary>
     /// Gets or sets the value indicating how many manufacturers on home page

@@ -58,6 +58,54 @@
 	<ItemGroup>
 		<None Include="App_Data\icons.json" CopyToPublishDirectory="PreserveNewest" />
 		<None Include="App_Data\widgetzones.json" CopyToPublishDirectory="PreserveNewest" />
+		<None Include="Themes\GCDTheme\theme.config" />
+		<None Include="Themes\GCDTheme\Views\Catalog\CategoryTemplate.ProductsInGridOrLines.cshtml" />
+		<None Include="Themes\GCDTheme\Views\Catalog\ManufacturerAll.cshtml" />
+		<None Include="Themes\GCDTheme\Views\Shared\Components\HomeBrands\Default.cshtml" />
+		<None Include="Themes\GCDTheme\Views\Shared\Components\HomeCategories\Default.cshtml" />
+		<None Include="Themes\GCDTheme\Views\Shared\ConfigureTheme.cshtml" />
+		<None Include="Themes\GCDTheme\Views\Shared\EmailTemplates\address.liquid" />
+		<None Include="Themes\GCDTheme\Views\Shared\EmailTemplates\footer.liquid" />
+		<None Include="Themes\GCDTheme\Views\Shared\EmailTemplates\header.liquid" />
+		<None Include="Themes\GCDTheme\Views\Shared\EmailTemplates\master.liquid" />
+		<None Include="Themes\GCDTheme\Views\Shared\EmailTemplates\order.liquid" />
+		<None Include="Themes\GCDTheme\Views\Shared\EmailTemplates\shipment.liquid" />
+		<None Include="Themes\GCDTheme\Views\Shared\Partials\Product.List.Item.Brand.cshtml">
+		  <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+		</None>
+		<None Include="Themes\GCDTheme\Views\_ViewImports.cshtml" />
+		<None Include="Themes\GCDTheme\Views\_ViewStart.cshtml" />
+		<None Include="Themes\GCDTheme\wwwroot\references.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\theme-rtl.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\theme.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_accordion.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_artlist.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_block.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_buttons.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_cart.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_checkout.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_cookie-manager.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_custom.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_fonts.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_footer.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_gallery.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_layout.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_login.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_megamenu.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_menu.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_misc.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_offcanvas.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_print.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_product.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_rating.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_rtl.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_search.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_shopbar.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_user.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_variables-configured.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_variables-custom.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_variables-reset.scss" />
+		<None Include="Themes\GCDTheme\wwwroot\_variables.scss" />
 		<None Include="App_Data\EmailTemplates\**" CopyToPublishDirectory="PreserveNewest" />
 		<None Include="App_Data\Geo\**" CopyToPublishDirectory="PreserveNewest" />
 		<None Include="App_Data\Localization\**" CopyToPublishDirectory="PreserveNewest" />
@@ -67,6 +115,13 @@
 	<!-- Copy publishable files in Areas directory -->
 	<ItemGroup>
 		<Content Include="Areas\Admin\sitemap.xml" CopyToPublishDirectory="PreserveNewest" />
+		<Content Include="Themes\GCDTheme\wwwroot\images\grippy.png" />
+		<Content Include="Themes\GCDTheme\wwwroot\images\loading.gif" />
+		<Content Include="Themes\GCDTheme\wwwroot\images\preview.png" />
+		<Content Include="Themes\GCDTheme\wwwroot\images\star-off-12.png" />
+		<Content Include="Themes\GCDTheme\wwwroot\images\star-off.png" />
+		<Content Include="Themes\GCDTheme\wwwroot\images\star-on-12.png" />
+		<Content Include="Themes\GCDTheme\wwwroot\images\star-on.png" />
 		<None Include="Areas\Admin\Views\**\*.cshtml" CopyToPublishDirectory="PreserveNewest" />
 	</ItemGroup>
 
@@ -113,6 +168,10 @@
 			<_Parameter1>Smartstore.Web.Tests</_Parameter1>
 		</AssemblyAttribute>
 	</ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="Modules\Webenology.InventoryPerStore\" />
+    </ItemGroup>
 
     <PropertyGroup>
         <AssemblyName>Smartstore.Web</AssemblyName>

@@ -77,7 +77,7 @@ namespace Smartstore.Core.Catalog.Search
                     facets = await GetFacetsAsync(searchQuery, totalHits);
                 }
             }
-            
+
             var result = new CatalogSearchResult(
                 null,
                 searchQuery,
@@ -181,7 +181,7 @@ namespace Smartstore.Core.Catalog.Search
                         facets.Add(new Facet(new FacetValue(manu.Id, IndexTypeCode.Int32)
                         {
                             IsSelected = descriptor.Values.Any(x => x.IsSelected && x.Value.Equals(manu.Id)),
-                            Label = label.HasValue() ? label : manu.Name,
+                            Label = label.HasValue() ? label : _catalogSettings.ShowManufacturersNameAsDescription ? manu.Description : manu.Name,
                             DisplayOrder = manu.DisplayOrder
                         }));
                     }

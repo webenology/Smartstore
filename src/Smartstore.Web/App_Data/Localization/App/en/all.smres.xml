@@ -20215,15 +20215,15 @@ within the observation window, additional requests may be denied, even if type-s
 	<LocaleResource Name="Tax.Exclusive">
 		<Value>Show prices tax exclusive</Value>
 	</LocaleResource>
-	<LocaleResource Name="Tax.ExclVAT">
-		<Value>excl. VAT</Value>
-	</LocaleResource>
-	<LocaleResource Name="Tax.Inclusive">
-		<Value>Show prices tax inclusive</Value>
-	</LocaleResource>
-	<LocaleResource Name="Tax.InclVAT">
-		<Value>incl. VAT</Value>
-	</LocaleResource>
+    <LocaleResource Name="Tax.ExclVAT">
+        <Value>excl. Tax</Value>
+    </LocaleResource>
+    <LocaleResource Name="Tax.Inclusive">
+        <Value>Show prices tax inclusive</Value>
+    </LocaleResource>
+    <LocaleResource Name="Tax.InclVAT">
+        <Value>incl. Tax</Value>
+    </LocaleResource>
 	<LocaleResource Name="Tax.LegalInfoFooter">
 		<Value>* All prices {0}, plus &lt;a href="{1}"&gt;shipping&lt;/a&gt;</Value>
 	</LocaleResource>

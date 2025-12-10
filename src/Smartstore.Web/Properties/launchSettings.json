@@ -10,7 +10,7 @@
     "Smartstore.Web": {
       "commandName": "Project",
       "launchBrowser": true,
-      "launchUrl": "http://localhost:5000",
+      "launchUrl": "https://localhost:5001",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
         "ASPNETCORE_HOSTINGSTARTUPEXCLUDEASSEMBLIES": "Microsoft.WebTools.ApiEndpointDiscovery"

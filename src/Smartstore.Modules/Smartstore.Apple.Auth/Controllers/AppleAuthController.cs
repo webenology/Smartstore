@@ -1,5 +1,9 @@
+using System;
+using System.Security.Principal;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Win32;
 using Smartstore.Apple.Auth.Models;
+using Smartstore.Caching;
 using Smartstore.ComponentModel;
 using Smartstore.Core.Security;
 using Smartstore.Engine.Modularity;
@@ -11,13 +15,20 @@ namespace Smartstore.Apple.Auth.Controllers
     [Route("[area]/apple/auth/{action=index}/{id?}")]
     public class AppleAuthController : AdminController
     {
+        private readonly static Lazy<bool> _shouldEnableIISUserProfile = new(ShouldEnableIISUserProfile);
+
         private readonly IOptionsMonitorCache<AppleAuthenticationOptions> _optionsCache;
         private readonly IProviderManager _providerManager;
+        private readonly ICacheManager _cache;
 
-        public AppleAuthController(IOptionsMonitorCache<AppleAuthenticationOptions> optionsCache, IProviderManager providerManager)
+        public AppleAuthController(
+            IOptionsMonitorCache<AppleAuthenticationOptions> optionsCache, 
+            IProviderManager providerManager,
+            ICacheManager cache)
         {
             _optionsCache = optionsCache;
             _providerManager = providerManager;
+            _cache = cache;
         }
 
         [HttpGet, LoadSetting]
@@ -29,6 +40,9 @@ namespace Smartstore.Apple.Auth.Controllers
             model.RedirectUrl = $"{host}signin-apple";
 
             ViewBag.Provider = _providerManager.GetProvider("Smartstore.Apple.Auth").Metadata;
+
+            // INFO: No invalidation needed as the cache will be cleared on app pool recycle anyway.
+            model.DisplayIISUserProfileWarning = _shouldEnableIISUserProfile.Value;
 
             return View(model);
         }
@@ -49,6 +63,31 @@ namespace Smartstore.Apple.Auth.Controllers
             NotifySuccess(T("Admin.Common.DataSuccessfullySaved"));
 
             return RedirectToAction(nameof(Configure));
+        }
+
+        private static bool ShouldEnableIISUserProfile()
+        {
+            // Non-Windows: IIS flag does not exist.
+            if (!OperatingSystem.IsWindows())
+            {
+                return false;
+            }
+
+            try
+            {
+                var sid = WindowsIdentity.GetCurrent().User?.Value;
+                if (string.IsNullOrWhiteSpace(sid))
+                {
+                    return false;
+                }
+
+                using var hive = Registry.Users.OpenSubKey(sid, writable: false);
+                return hive == null;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

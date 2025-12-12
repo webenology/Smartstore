@@ -5,6 +5,208 @@
 */
 'use strict';
 
+/* --------------------------------------------------
+ *  MenuPlugin – Roving‑Tabindex & Sub‑menu handling
+ *  Handles [role="menubar"] with nested [role="menu"] and [role="menuitem"].
+ * -------------------------------------------------- */
+class MenuPlugin extends AccessKitExpandablePluginBase {
+    getRovingItems(root) {
+        return Array.from(root.querySelectorAll(this.strategy.itemSelector))
+            .filter(mi => mi.closest(this.strategy.rootSelector) === root);
+    }
+
+    initWidgetCore(widget) {
+        if (widget.root.getAttribute('role') === 'menubar') {
+            widget.orientation = 'horizontal';
+        }
+    }
+
+    onActivateItem(element, index, widget) {
+        if (element.getAttribute('aria-haspopup') === 'menu') {
+            this._open(element);
+        } else {
+            element.click();
+        }
+        return true;
+    }
+
+    onItemKeyPress(event, index, widget) {
+        const k = AccessKit.KEY;
+        const isMenubar = widget.root.getAttribute('role') === 'menubar';
+        const isVertical = widget.orientation === 'vertical';
+        const dirOpen = isMenubar ? null : (isVertical ? (widget.rtl ? k.LEFT : k.RIGHT) : k.DOWN);
+        const dirClose = isMenubar ? null : (isVertical ? (widget.rtl ? k.RIGHT : k.LEFT) : k.UP);
+
+        if (isMenubar && event.key === k.DOWN) {
+            if (event.target.getAttribute('aria-haspopup') === 'menu') {
+                this._open(event.target);
+                return true;
+            }
+        }
+
+        if (!isMenubar && event.key === dirOpen) {
+            if (event.target.getAttribute('aria-haspopup') === 'menu') {
+                this._open(event.target);
+                return true;
+            }
+        }
+
+        if (event.key === k.ESC || event.key === dirClose) {
+            if (isMenubar) {
+                this._closeAll();
+            } else {
+                const trigger = document.querySelector(`[aria-controls="${widget.root.id}"]`);
+                this._close(trigger, widget.root);
+                trigger?.focus();
+            }
+            return true;
+        }
+
+        if (event.key === k.TAB) {
+            if (isMenubar) {
+                this.applyRoving(widget);
+            } else {
+                this._closeAll();
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    _open(trigger) {
+        const menu = document.getElementById(trigger.getAttribute('aria-controls'));
+        if (!menu) return;
+
+        this.addWidget(menu, true);
+        const menuWidget = this.getWidget(menu);
+        const items = menuWidget.items;
+        this.toggleExpanded(trigger, true, { focusTarget: items[0] });
+    }
+
+    _close(trigger, menu) {
+        if (!menu) return;
+        this.toggleExpanded(trigger, false, { focusTarget: 'trigger' });
+    }
+
+    _closeAll() {
+        document.querySelectorAll('[role="menu"][aria-hidden="false"]').forEach(menu => {
+            const trigger = document.querySelector(`[aria-controls="${menu.id}"][aria-expanded="true"]`);
+            this.toggleExpanded(trigger, false, { focusTarget: 'trigger' });
+        });
+    }
+}
+
+
+/* --------------------------------------------------
+* ComboboxPlugin – Expand / Collapse & Option Commit
+* Handles[role = "combobox"] that control a[role = "listbox"]
+* -------------------------------------------------- */
+class ComboboxPlugin extends AccessKitExpandablePluginBase {
+    initWidgetCore(widget) {
+        const cb = widget.root;
+        const list = document.getElementById(cb.getAttribute('aria-controls'));
+        if (!list || list.getAttribute('role') !== 'listbox') return;
+
+        // Commit selection on pointer activation
+        list.addEventListener('click', e => {
+            const opt = e.target.closest('[role="option"]');
+            if (opt && list.contains(opt)) {
+                this._commitSelection(opt, cb);
+            }
+        });
+
+        // Close when clicking outside
+        const outsideClick = e => {
+            if (!cb.contains(e.target) && cb.getAttribute('aria-expanded') === 'true' && !list.contains(e.target)) {
+                e.preventDefault();
+                this.toggleExpanded(cb, false, { focusTarget: 'trigger' });
+            }
+        };
+
+        cb.addEventListener('expand.ak', e => {
+            e.stopPropagation();
+            if (cb.getAttribute('aria-expanded') !== 'true') {
+                cb.click();
+                document.addEventListener('mousedown', outsideClick, true);
+            }
+        });
+
+        cb.addEventListener('collapse.ak', () => {
+            document.removeEventListener('mousedown', outsideClick, true);
+        });
+
+        // Handle close/commit keys inside listbox
+        list.addEventListener('keydown', e => {
+            const k = AccessKit.KEY;
+            if (e.key === k.ESC || e.key === k.TAB || (e.key === k.UP && e.altKey)) {
+                if (e.key !== k.TAB) e.preventDefault();
+                this.toggleExpanded(cb, false, { focusTarget: 'trigger' });
+                return;
+            }
+            if (e.key === k.ENTER) {
+                const sel = list.querySelector('[role="option"][aria-selected="true"]') || e.target.closest('[role="option"]');
+                if (sel) this._commitSelection(sel, cb);
+            }
+        });
+
+        // Sync trigger when ListboxPlugin selects
+        list.addEventListener('select.listbox.ak', e => {
+            const { opt } = e.detail || {};
+            if (opt && cb.tagName != 'INPUT') this._syncToTrigger(cb, opt);
+        });
+    }
+
+    handleKeyCore(e, widget) {
+        if (e.target !== widget.root) return false;
+
+        const cb = widget.root;
+        const list = document.getElementById(cb.getAttribute('aria-controls'));
+        if (!list) return false;
+
+        const k = AccessKit.KEY;
+        const firstOpt = list.querySelector(AccessKit.ACTIVE_OPTION_SELECTOR);
+        const opts = list.querySelectorAll(AccessKit.ACTIVE_OPTION_SELECTOR);
+        const lastOpt = opts[opts.length - 1] || null;
+        const isOpen = cb.getAttribute('aria-expanded') === 'true';
+
+        switch (e.key) {
+            case k.DOWN:
+                this.toggleExpanded(cb, true, { focusTarget: firstOpt });
+                return true;
+            case k.UP:
+                this.toggleExpanded(cb, true, { focusTarget: lastOpt });
+                return true;
+            case k.ENTER:
+            case k.SPACE:
+                if (cb.tagName == 'INPUT') return false;
+                this.toggleExpanded(cb, !isOpen, { focusTarget: isOpen ? 'trigger' : firstOpt });
+                return true;
+            case k.ESC:
+            case k.TAB:
+                if (isOpen) {
+                    this.toggleExpanded(cb, false, { focusTarget: 'trigger' });
+                }
+                return e.key !== k.TAB;
+        }
+
+        return false;
+    }
+
+    _commitSelection(opt, cb) {
+        const list = opt.closest('[role="listbox"]');
+        if (list && list.getAttribute('data-ak-multiselect') === 'true') {
+            this._syncToTrigger(cb, opt);
+            this.toggleExpanded(cb, false, { focusTarget: 'trigger' });
+        }
+    }
+
+    _syncToTrigger(cb, opt) {
+        cb.value = (opt.textContent || '').trim();
+        cb.setAttribute('aria-activedescendant', opt.id || (opt.id = `ak-opt-${crypto.randomUUID()}`));
+    }
+}
+
 
 /* --------------------------------------------------
  *  ListboxPlugin – Roving‑Tabindex, Selection & Type‑ahead
@@ -26,9 +228,10 @@ class ListboxPlugin extends AccessKitPluginBase {
         // Pointer interaction mirrors keyboard behaviour
         list.addEventListener('click', e => {
             const opt = e.target.closest(widget.itemSelector);
+
             if (opt) {
                 this.move(opt, widget);
-                this.toggleSelect(opt, widget);
+                this.toggleSelect(opt, widget, false, true);
             }
         });
 
@@ -36,10 +239,21 @@ class ListboxPlugin extends AccessKitPluginBase {
         if (!list.hasAttribute('tabindex')) {
             list.tabIndex = -1;
         }
+
+        // Remove list box plugin on disclosure collapse if disclosure is autocomplete to enable reinit for altered results.
+        document.addEventListener('collapse.ak', e => {
+            const trigger = e.detail.trigger;
+            if (trigger.getAttribute("role") == "combobox" && trigger.hasAttribute("aria-autocomplete")) {
+                const target = e.detail.target;
+                if (this._widgets.has(target)) {
+                    this._widgets.delete(target);
+                }
+            }
+        });
     }
 
     onActivateItem(element, index, widget) {
-        this.toggleSelect(element, widget);
+        this.toggleSelect(element, widget, false, true);
         return true;
     }
 
@@ -53,17 +267,28 @@ class ListboxPlugin extends AccessKitPluginBase {
     }
 
     move(opt, widget) {
-        super.move(opt, widget);
+        const handled = super.move(opt, widget);
 
-        // TODO: Evaluate if this is needed
         // In single‑select listboxes, moving also selects (if manualselect is not true)
         if (!widget.multiselect && !widget.manualselect) {
-            this.toggleSelect(opt, widget, true /*replace*/);
+            this.toggleSelect(opt, widget, true, false);
         }
+
+        return handled;
     }
 
-    /* -------- Selection handling -------- */
-    toggleSelect(opt, widget, replace = false) {
+    /**
+     * Toggles the selection state of an option inside a listbox widget.
+     *
+     * In single‑select mode (or when `replace` is true) all other options are
+     * deselected before `opt` is marked as selected. Otherwise the current selection state of `opt` is flipped.
+     *
+     * @param {HTMLElement} opt                 The option element to toggle.
+     * @param {Object}      widget              Widget context containing listbox data.
+     * @param {boolean}     [replace=false]     If true, replaces any existing selection.
+     * @param {boolean}     [fireClick=true]    If true, triggers a click on `opt`.
+     */
+    toggleSelect(opt, widget, replace = false, fireClick = true) {
         const list = widget.root;
 
         if (!widget.multiselect || replace) {
@@ -71,7 +296,9 @@ class ListboxPlugin extends AccessKitPluginBase {
             this.events.trigger('select.listbox', list, { list, opt });
 
             // Call click immediately for single select lists.
-            opt.click();
+            if (fireClick) {
+                opt.click();
+            }
         }
         else {
             const selected = opt.getAttribute('aria-selected') === 'true';
@@ -80,8 +307,8 @@ class ListboxPlugin extends AccessKitPluginBase {
         }
     }
 
-    // TODO: (wcag) (mh) This seems to be to expensive. We don't listen for these keys right now.
-    // Either find a way to reigister listing for these keys in a smarter way or throw away. See _onKey in base constructor.
+    // INFO: This seems to be to expensive. We don't listen for these keys right now.
+    // If you want to enable typeahead look for information in _onKeyDown in the class AccessKit.
     /* -------- First‑character type‑ahead -------- */
     _typeahead(char, startIdx, widget) {
         char = char.toLowerCase();
@@ -115,8 +342,9 @@ class TablistPlugin extends AccessKitPluginBase {
     // Shift roving focus to the next tab.
     move(tab, widget) {
         if (!tab) return;
-        super.move(tab, widget);
+        const handled = super.move(tab, widget);
         this.select(tab, widget, false); // Do not display tabpanel on move.
+        return handled;
     }
 
     // Update aria attributes & optionally select/display tab panel.
@@ -138,64 +366,25 @@ class TablistPlugin extends AccessKitPluginBase {
     }
 }
 
-
 /* --------------------------------------------------
 *  TreePlugin – 
-*  Handles all items of [role="tree"] + [role="treeitem"]
+*  Handles all items of ([role="tree"] || [role="group"]) + [role="treeitem"]
 * -------------------------------------------------- */
 class TreePlugin extends AccessKitExpandablePluginBase {
-    //_visibleItems(tree) {
-    //    // TODO: (wcag) (mh) Correct this and use cached items. 
-    //    return Array.from(tree.querySelectorAll('[role="treeitem"]')).filter(node => {
-    //        let anc = node.parentElement?.closest('[role="treeitem"]');
-    //        while (anc) {
-    //            if (anc.getAttribute('aria-expanded') === 'false') return false;
-    //            anc = anc.parentElement?.closest('[role="treeitem"]');
-    //        }
-    //        return true; // No collapsed ancestor found
-    //    });
-    //}
+    _visibleItems(tree) {
+        return Array.from(tree.querySelectorAll(this.strategy.itemSelector)).filter(node => {
+            let anc = node.parentElement?.closest(this.strategy.itemSelector);
+            while (anc) {
+                if (anc.getAttribute('aria-expanded') === 'false') return false;
+                anc = anc.parentElement?.closest(this.strategy.itemSelector);
+            }
+            return true; // No collapsed ancestor found
+        });
+    }
 
-    //handleKeyCore(e, widget) {
-    //    const item = e.target;
-    //    if (!item || item.getAttribute('role') !== 'treeitem')
-    //        return false;
-
-    //    const tree = item.closest('[role="tree"]') || item.closest('[role="group"]');
-    //    if (!tree)
-    //        return false;
-
-    //    const items = this._visibleItems(tree);
-    //    if (!items.length)
-    //        return false;
-
-    //    const orientation = tree.getAttribute('aria-orientation') ?? 'vertical';
-
-    //    return super.handleKeyCore(e, widget);
-
-    //    return this.handleRovingKeys(e, items, {
-    //        orientation,
-    //        activateFn: (el) => (el.trigger ? el.trigger('click') : el.click()),
-    //        extraKeysFn: (ev, _idx, list) => {
-    //            if (ev.key === KEY.RIGHT) {
-    //                this.toggleExpanded(item, true, { focusTarget: 'first' });
-    //                return true;
-    //            }
-
-    //            if (ev.key === KEY.LEFT || ev.key === KEY.ESC) {
-    //                this.toggleExpanded(item, false);
-    //                return true;
-    //            }
-
-    //            if (ev.key === KEY.TAB) {
-    //                this.applyRoving(tree, '[role="treeitem"]');
-    //                return false;
-    //            }
-
-    //            return false;
-    //        },
-    //    });
-    //}
+    getRovingItems(root) {
+        return this._visibleItems(root);
+    }
 
     onActivateItem(element, index, widget) {
         element.trigger ? element.trigger('click') : element.click()
@@ -227,12 +416,8 @@ class TreePlugin extends AccessKitExpandablePluginBase {
 
     move(target, widget) {
         if (!target) return;
-
-        //tree = tree || item.closest('[role="tree"]');
-        //siblings = siblings || this._visibleItems(tree);
-
-        // TODO: (wcag) (mc) Filter by visible items only
-        super.move(target, widget);
+        widget.items = this._visibleItems(widget.root);
+        return super.move(target, widget);
     }
 }
 
@@ -267,11 +452,123 @@ class RadioGroupPlugin extends AccessKitPluginBase {
     }
 
     move(target, widget) {
-        super.move(target, widget);
+        const handled = super.move(target, widget);
 
         // TODO: (wcag) (mh) Evaluate if this is needed
         // In radiogroups, moving also selects (if manualselect is not true)
         if (!widget?.manualselect) target.click();
+
+        return handled;
+    }
+}
+
+
+/* --------------------------------------------------
+ *  DisclosurePlugin – Expand/Collapse 
+ *  Handles stand‑alone disclosures
+ * -------------------------------------------------- */
+class DisclosurePlugin extends AccessKitExpandablePluginBase {
+    _getPanel(eventTarget) {
+        const panelId = eventTarget.getAttribute("aria-controls");
+        return (panelId && document.getElementById(panelId)) || eventTarget.closest('[aria-hidden=false]');
+    }
+
+    initWidgetCore(widget) {
+        const root = widget.root;
+
+        root.addEventListener('click', () => {
+            this.toggleExpanded(root, null, { focusTarget: 'trigger' });
+        });
+    }
+
+    handleKeyCore(e, widget) {
+        const k = AccessKit.KEY;
+
+        if (widget.strategy.name == "disclosure") {
+            if (e.key === k.ENTER || e.key === k.SPACE) {
+                this.onActivateItem(widget.root, 0, widget);
+                return true;
+            }
+        } else if (e.key === k.TAB) {
+            // If TAB is pressed in accordion mode we move to the next activatable panel.
+            const panel = this._getPanel(e.target)
+            const current = panel && widget.items.find(i => i.getAttribute('aria-controls') === panel.id);
+            const next = current && widget.items[widget.items.indexOf(current) + (e.shiftKey ? -1 : 1)];
+            if (next) {
+                e.preventDefault();
+                return super.move(next, widget);
+            }
+        }
+
+        if (e.key === k.ESC) {
+            const panel = this._getPanel(e.target)
+
+            if (panel) {
+                const opener = document.querySelector(`[aria-expanded="true"][aria-controls="${panel.id}"]`);
+                if (opener) {
+                    const collapseSiblings = widget.root.hasAttribute('data-collapse-siblings');
+                    this.toggleExpanded(opener, false, { collapseSiblings: collapseSiblings, focusTarget: 'trigger' });
+                    return true;
+                }
+            }
+        }
+
+        return super.handleKeyCore(e, widget);
+    }
+
+    onActivateItem(element, _index, _widget) {
+        this.toggleExpanded(element, true, { focusTarget: 'first' });
+        const panelId = element.getAttribute('aria-controls');
+        const panel = panelId && document.getElementById(panelId);
+        if (panel) {
+            const trig = element;
+            const focusHandler = e => {
+                const el = e.target;
+                if (!panel.contains(el) && el !== trig && trig.hasAttribute('ak-close-on-leave')) {
+                    this.toggleExpanded(trig, false);
+                    document.removeEventListener('focusin', focusHandler, true);
+                }
+            };
+            document.addEventListener('focusin', focusHandler, true);
+        }
+        
+        return true;
+    }
+}
+
+
+/* --------------------------------------------------
+ *  Accordions
+ *  Handles all [data-ak-accordion] elements based on disclosure pattern.
+ * -------------------------------------------------- */
+class AccordionPlugin extends DisclosurePlugin {
+    initWidgetCore(widget) {
+        const root = widget.root;
+        const collapseSiblings = root.hasAttribute('data-collapse-siblings');
+
+        root.addEventListener('click', e => {
+            const trig = e.target.closest(widget.strategy.itemSelector);
+            if (trig && widget.items.includes(trig)) {
+                this.toggleExpanded(trig, null, { collapseSiblings, focusTarget: 'trigger' });
+            }
+        });
+    }
+
+    onActivateItem(element, _index, widget) {
+        const collapseSiblings = widget.root.hasAttribute('data-collapse-siblings');
+        this.toggleExpanded(element, true, { collapseSiblings, focusTarget: 'first' });
+        
+        return true;
+    }
+
+    onItemKeyPress(event, _index, widget) {
+        if (event.key === AccessKit.KEY.ESC) {
+            const collapseSiblings = widget.root.hasAttribute('data-collapse-siblings');
+            this.toggleExpanded(event.target, false, { collapseSiblings, focusTarget: 'trigger' });
+            return true;
+        }
+
+        return false;
     }
 }
 
@@ -279,42 +576,53 @@ class RadioGroupPlugin extends AccessKitPluginBase {
 (function () {
     // Register default strategies
     AccessKit.register([
-        //{
-        //    ctor: MenuPlugin.ctor,
-        //    name: 'menu',
-        //    rootSelector: '[role="menu"], [role="menubar"]',
-        //    itemSelector: '[role="menuitem"]'
-        //},
-        //{
-        //    ctor: ComboboxPlugin.ctor,
-        //    name: 'combobox',
-        //    rootSelector: '[role="combobox"]',
-        //    itemSelector: AccessKit.ACTIVE_OPTION_SELECTOR
-        //},
         {
-            ctor: ListboxPlugin.ctor,
+            ctor: MenuPlugin,
+            name: 'menu',
+            rootSelector: '[role="menu"], [role="menubar"]',
+            itemSelector: '[role="menuitem"]'
+        },
+        {
+            ctor: ComboboxPlugin,
+            name: 'combobox',
+            rootSelector: '[role="combobox"]'
+        },
+        {
+            ctor: ListboxPlugin,
             name: 'listbox',
             rootSelector: '[role="listbox"]',
             itemSelector: AccessKit.ACTIVE_OPTION_SELECTOR
         },
         {
-            ctor: RadioGroupPlugin.ctor,
+            ctor: RadioGroupPlugin,
             name: 'radiogroup',
             rootSelector: '[role="radiogroup"]',
             itemSelector: 'input[type="radio"]:not([disabled])'
         },
         {
-            ctor: TreePlugin.ctor,
+            ctor: TreePlugin,
             name: 'tree',
             rootSelector: '[role="tree"], [role="group"]',
             itemSelector: '[role="treeitem"]'
         },
         {
-            ctor: TablistPlugin.ctor,
+            ctor: TablistPlugin,
             name: 'tablist',
             rootSelector: '[role="tablist"]',
-            itemSelector: '[role="tab"]'
+            itemSelector: '[role="tab"]',
+            defaultOrientation: 'horizontal' 
         },
+        {
+            ctor: AccordionPlugin,
+            name: 'accordion',
+            rootSelector: '[data-ak-accordion]',
+            itemSelector: '[aria-controls][aria-expanded]:not([role="combobox"])'
+        },
+        {
+            ctor: DisclosurePlugin,
+            name: 'disclosure',
+            rootSelector: '[aria-controls][aria-expanded]:not([data-ak-accordion] [aria-expanded]):not([role="combobox"])'
+        }
     ]);
     
     document.addEventListener('DOMContentLoaded', () => {

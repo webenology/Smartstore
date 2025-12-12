@@ -21,6 +21,7 @@ using Smartstore.Core.Messaging;
 using Smartstore.Core.Security;
 using Smartstore.Core.Seo;
 using Smartstore.Core.Seo.Routing;
+using Smartstore.Threading;
 using Smartstore.Utilities;
 using Smartstore.Utilities.Html;
 using Smartstore.Web.Models.Cart;
@@ -44,6 +45,7 @@ namespace Smartstore.Web.Controllers
         private readonly IProductCompareService _productCompareService;
         private readonly IOrderCalculationService _orderCalculationService;
         private readonly ICheckoutAttributeMaterializer _checkoutAttributeMaterializer;
+        private readonly IDistributedLockProvider _lockProvider;
         private readonly ShoppingCartSettings _shoppingCartSettings;
         private readonly CaptchaSettings _captchaSettings;
         private readonly OrderSettings _orderSettings;
@@ -67,6 +69,7 @@ namespace Smartstore.Web.Controllers
             IProductCompareService productCompareService,
             IOrderCalculationService orderCalculationService,
             ICheckoutAttributeMaterializer checkoutAttributeMaterializer,
+            IDistributedLockProvider lockProvider,
             ShoppingCartSettings shoppingCartSettings,
             CaptchaSettings captchaSettings,
             OrderSettings orderSettings,
@@ -89,6 +92,7 @@ namespace Smartstore.Web.Controllers
             _productCompareService = productCompareService;
             _orderCalculationService = orderCalculationService;
             _checkoutAttributeMaterializer = checkoutAttributeMaterializer;
+            _lockProvider = lockProvider;
             _shoppingCartSettings = shoppingCartSettings;
             _captchaSettings = captchaSettings;
             _orderSettings = orderSettings;
@@ -803,8 +807,7 @@ namespace Smartstore.Web.Controllers
 
             var model = new WishlistEmailAFriendModel
             {
-                YourEmailAddress = customer.Email,
-                DisplayCaptcha = _captchaSettings.CanDisplayCaptcha && _captchaSettings.ShowOnEmailWishlistToFriendPage
+                YourEmailAddress = customer.Email
             };
 
             return View(model);
@@ -812,9 +815,9 @@ namespace Smartstore.Web.Controllers
 
         [HttpPost, ActionName("EmailWishlist")]
         [FormValueRequired("send-email")]
-        [ValidateCaptcha(CaptchaSettingName = nameof(CaptchaSettings.ShowOnEmailWishlistToFriendPage))]
+        [ValidateCaptcha(CaptchaSettings.Targets.ShareWishlist)]
         [GdprConsent]
-        public async Task<IActionResult> EmailWishlistSend(WishlistEmailAFriendModel model, string captchaError)
+        public async Task<IActionResult> EmailWishlistSend(WishlistEmailAFriendModel model)
         {
             if (!_shoppingCartSettings.EmailWishlistEnabled || !await Services.Permissions.AuthorizeAsync(Permissions.Cart.AccessWishlist))
             {
@@ -828,11 +831,6 @@ namespace Smartstore.Web.Controllers
                 return RedirectToRoute("Homepage");
             }
 
-            if (_captchaSettings.ShowOnEmailWishlistToFriendPage && captchaError.HasValue())
-            {
-                ModelState.AddModelError(string.Empty, captchaError);
-            }
-
             // Check whether the current customer is guest and is allowed to email wishlist.
             if (customer.IsGuest() && !_shoppingCartSettings.AllowAnonymousUsersToEmailWishlist)
             {
@@ -843,7 +841,6 @@ namespace Smartstore.Web.Controllers
             {
                 // If we got this far, something failed, redisplay form.
                 ModelState.AddModelError(string.Empty, T("Common.Error.Sendmail"));
-                model.DisplayCaptcha = _captchaSettings.CanDisplayCaptcha && _captchaSettings.ShowOnEmailWishlistToFriendPage;
 
                 return View(model);
             }
@@ -972,16 +969,29 @@ namespace Smartstore.Web.Controllers
         {
             var fullCart = await _shoppingCartService.GetCartAsync(storeId: Services.StoreContext.CurrentStore.Id, activeOnly: null);
             var cart = fullCart.WithActiveItemsOnly();
-            cart.Customer.GenericAttributes.CheckoutAttributes = await _checkoutAttributeMaterializer.CreateCheckoutAttributeSelectionAsync(query, cart);
+            var applied = false;
+            string message = null;
 
-            var (applied, discount) = await _orderCalculationService.ApplyDiscountCouponAsync(cart, discountCouponCode);
-            await _db.SaveChangesAsync();
+            await ApplyCheckoutAttributes(query, cart);
+
+            try
+            {
+                Discount discount;
+                (applied, discount) = await _orderCalculationService.ApplyDiscountCouponAsync(cart, discountCouponCode);
+                await _db.SaveChangesAsync();
+
+                message = applied
+                    ? T("ShoppingCart.DiscountCouponCode.Applied")
+                    : T(discount == null ? "ShoppingCart.DiscountCouponCode.WrongDiscount" : "ShoppingCart.DiscountCouponCode.NoMoreDiscount");
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+            }
 
             var model = await fullCart.MapAsync();
             model.DiscountBox.IsWarning = !applied;
-            model.DiscountBox.Message = applied
-                ? T("ShoppingCart.DiscountCouponCode.Applied")
-                : T(discount == null ? "ShoppingCart.DiscountCouponCode.WrongDiscount" : "ShoppingCart.DiscountCouponCode.NoMoreDiscount");
+            model.DiscountBox.Message = message;
 
             var discountHtml = await InvokePartialViewAsync("_DiscountBox", model.DiscountBox);
             var cartHtml = await InvokePartialViewAsync("CartItems", model);
@@ -1030,51 +1040,9 @@ namespace Smartstore.Web.Controllers
         public async Task<IActionResult> ApplyGiftCardCoupon(ProductVariantQuery query, string giftCardCouponCode)
         {
             var cart = await _shoppingCartService.GetCartAsync(storeId: Services.StoreContext.CurrentStore.Id);
-            cart.Customer.GenericAttributes.CheckoutAttributes = await _checkoutAttributeMaterializer.CreateCheckoutAttributeSelectionAsync(query, cart);
+            await ApplyCheckoutAttributes(query, cart);
 
-            string message = null;
-            var success = false;
-
-            if (!cart.IncludesMatchingItems(x => x.IsRecurring))
-            {
-                if (giftCardCouponCode.HasValue())
-                {
-                    var giftCard = await _db.GiftCards
-                        .Include(x => x.GiftCardUsageHistory)
-                        .AsNoTracking()
-                        .ApplyCouponFilter([giftCardCouponCode])
-                        .FirstOrDefaultAsync();
-
-                    var isGiftCardValid = giftCard != null && await _giftCardService.ValidateGiftCardAsync(giftCard, cart.StoreId);
-                    if (isGiftCardValid)
-                    {
-                        var couponCodes = new List<GiftCardCouponCode>(cart.Customer.GenericAttributes.GiftCardCouponCodes);
-                        if (!couponCodes.Select(x => x.Value).Contains(giftCardCouponCode))
-                        {
-                            couponCodes.Add(new GiftCardCouponCode(giftCardCouponCode));
-
-                            cart.Customer.GenericAttributes.GiftCardCouponCodes = couponCodes;
-                        }
-
-                        success = true;
-                        message = T("ShoppingCart.GiftCardCouponCode.Applied");
-                    }
-                    else
-                    {
-                        message = T("ShoppingCart.GiftCardCouponCode.WrongGiftCard");
-                    }
-                }
-                else
-                {
-                    message = T("ShoppingCart.GiftCardCouponCode.WrongGiftCard");
-                }
-            }
-            else
-            {
-                message = T("ShoppingCart.GiftCardCouponCode.DontWorkWithAutoshipProducts");
-            }
-
-            await _db.SaveChangesAsync();
+            var (success, message) = await ApplyGiftCardCouponInternal(cart, giftCardCouponCode);
 
             var model = await cart.MapAsync();
             model.GiftCardBox.Message = message;
@@ -1089,6 +1057,53 @@ namespace Smartstore.Web.Controllers
                 totalsHtml,
                 giftCardHtml
             });
+        }
+
+        private async Task<(bool Success, string Message)> ApplyGiftCardCouponInternal(ShoppingCart cart, string giftCardCouponCode)
+        {
+            if (cart.IncludesMatchingItems(x => x.IsRecurring))
+            {
+                return (false, T("ShoppingCart.GiftCardCouponCode.DontWorkWithAutoshipProducts"));
+            }
+
+            if (giftCardCouponCode.IsEmpty())
+            {
+                return (false, T("ShoppingCart.GiftCardCouponCode.WrongGiftCard"));
+            }
+
+            var keyLock = _lockProvider.GetLock($"shoppingcart.applygiftcardcoupon:{giftCardCouponCode}");
+            if (await keyLock.IsHeldAsync())
+            {
+                return (false, $"Gift card coupon code {giftCardCouponCode} is currently being processed by another request.");
+            }
+
+            using (await keyLock.AcquireAsync())
+            {
+                var giftCard = await _db.GiftCards
+                    .Include(x => x.GiftCardUsageHistory)
+                    .Include(x => x.PurchasedWithOrderItem)
+                    .ThenInclude(x => x.Order)
+                    .AsSplitQuery()
+                    .AsNoTracking()
+                    .ApplyCouponFilter([giftCardCouponCode])
+                    .ApplyStandardFilter()
+                    .FirstOrDefaultAsync();
+                
+                if (giftCard == null || !await _giftCardService.ValidateGiftCardAsync(giftCard, cart.Customer, cart.StoreId))
+                {
+                    return (false, T("ShoppingCart.GiftCardCouponCode.WrongGiftCard"));
+                }
+
+                var appliedCouponCodes = new List<GiftCardCouponCode>(cart.Customer.GenericAttributes.GiftCardCouponCodes);
+                if (!appliedCouponCodes.Any(x => x.Value.EqualsNoCase(giftCard.GiftCardCouponCode)))
+                {
+                    appliedCouponCodes.Add(new GiftCardCouponCode(giftCard.GiftCardCouponCode));
+                    cart.Customer.GenericAttributes.GiftCardCouponCodes = appliedCouponCodes;
+                    await _db.SaveChangesAsync();
+                }
+
+                return (true, T("ShoppingCart.GiftCardCouponCode.Applied"));
+            }
         }
 
         [HttpPost]
@@ -1243,6 +1258,20 @@ namespace Smartstore.Web.Controllers
             }
 
             return (options, []);
+        }
+
+        private async Task<bool> ApplyCheckoutAttributes(ProductVariantQuery query, ShoppingCart cart)
+        {
+            var checkoutAttributeSelection = await _checkoutAttributeMaterializer.CreateCheckoutAttributeSelectionAsync(query, cart);
+
+            if (cart.Customer.GenericAttributes.CheckoutAttributes != checkoutAttributeSelection)
+            {
+                cart.Customer.GenericAttributes.CheckoutAttributes = checkoutAttributeSelection;
+                await _db.SaveChangesAsync();
+                return true;
+            }
+
+            return false;
         }
 
         private string GetCartItemSelectionLink(ShoppingCart cart)

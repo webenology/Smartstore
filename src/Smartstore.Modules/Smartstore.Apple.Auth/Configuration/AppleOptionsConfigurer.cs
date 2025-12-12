@@ -6,6 +6,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using Autofac;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using Smartstore.Apple.Auth;
@@ -40,44 +41,58 @@ namespace Smartstore.Apple
             }
 
             var settings = _appContext.Services.Resolve<AppleExternalAuthSettings>();
-
-            options.ClientId = settings.ClientId;
-            options.KeyId = settings.KeyId;
-            options.TeamId = settings.TeamId;
-            // INFO: This was the proposed way by the library devs. But it's even commented out in their sample code. 
-            // So I guess they couldn't get it to work either. 
-            //options.PrivateKey = (keyId, cancellationToken) => Task.FromResult(settings.PrivateKey.AsMemory());
-
-            if (!_precomputedSecret.HasValue())
+            if (!settings.ClientId.HasValue() || !settings.KeyId.HasValue() || !settings.TeamId.HasValue() || !settings.PrivateKey.HasValue())
             {
-                _precomputedSecret = CreateAppleClientSecret(settings.TeamId, settings.ClientId, settings.KeyId, settings.PrivateKey, daysValid: 30);
+                // Not configured.
+                return; 
             }
-            
-            options.GenerateClientSecret = false;                               // Important to supress the default client secret generation.
-            options.ClientSecret = _precomputedSecret;                          // Instead we generate it ourselves :-)
-            options.ValidateTokens = false;
-            options.SecurityTokenHandler = new JsonWebTokenHandler();
-            options.CorrelationCookie.Expiration = TimeSpan.FromMinutes(15);    // 15 minutes should be enough for the user to enter his Apple creds.
 
-            options.Events = new AppleAuthenticationEvents
+            // INFO: If generation of the client secret fails (maybe because of wrong configuration data)
+            // we get out of the Configure method before setting up options so they are not in a volatile state.
+            try
             {
-                OnRemoteFailure = context =>
+                _precomputedSecret = CreateAppleClientSecret(settings, daysValid: 30);
+
+                // Important to supress the default client secret generation.
+                options.GenerateClientSecret = false;
+                // Instead we generate it ourselves :-)
+                options.ClientSecret = _precomputedSecret;
+
+                options.ClientId = settings.ClientId;
+                options.KeyId = settings.KeyId;
+                options.TeamId = settings.TeamId;
+
+                // INFO: This was the proposed way by the library devs. But it's even commented out in their sample code. 
+                // So I guess they couldn't get it to work either. 
+                //options.PrivateKey = (keyId, cancellationToken) => Task.FromResult(settings.PrivateKey.AsMemory());
+
+                // 15 minutes should be enough for the user to enter his Apple creds.
+                options.CorrelationCookie.Expiration = TimeSpan.FromMinutes(15);
+
+                options.ValidateTokens = false;
+                options.SecurityTokenHandler ??= new JsonWebTokenHandler();
+
+                options.Events.OnRemoteFailure ??= context =>
                 {
                     var errorUrl = context.Request.PathBase.Value + $"/identity/externalerrorcallback?provider=apple&errorMessage={context.Failure.Message}";
                     context.Response.Redirect(errorUrl);
                     context.HandleResponse();
                     return Task.CompletedTask;
-                }
-            };
+                };
+            }
+            catch (Exception ex)
+            {
+                _appContext.Logger.LogError(ex, "Failed to create Apple client secret.");
+            }
         }
 
         public void Configure(AppleAuthenticationOptions options)
             => Debug.Fail("This infrastructure method shouldn't be called.");
 
-        private static string CreateAppleClientSecret(string teamId, string clientId, string keyId, string privateKeyPem, int daysValid = 30)
+        private static string CreateAppleClientSecret(AppleExternalAuthSettings settings, int daysValid = 30)
         {
             // Normalize PEM: turn literal \n into real newlines, strip CR, trim
-            var pem = privateKeyPem.Replace("\r", "").Replace("\\n", "\n").Trim();
+            var pem = settings.PrivateKey.Replace("\r", "").Replace("\\n", "\n").Trim();
             var base64 = ExtractPkcs8Base64(pem);
             var keyBytes = Convert.FromBase64String(base64);
 
@@ -86,13 +101,16 @@ namespace Smartstore.Apple
             var parameters = ecdsaImport.ExportParameters(includePrivateParameters: true);
             using var ecdsa = ECDsa.Create(parameters);
 
-            var credentials = new SigningCredentials(new ECDsaSecurityKey(ecdsa) { KeyId = keyId }, SecurityAlgorithms.EcdsaSha256);
+            var credentials = new SigningCredentials(new ECDsaSecurityKey(ecdsa) { KeyId = settings.KeyId }, SecurityAlgorithms.EcdsaSha256)
+            {
+                CryptoProviderFactory = new CryptoProviderFactory { CacheSignatureProviders = false }
+            };
 
             var now = DateTime.UtcNow;
             var token = new JwtSecurityToken(
-                issuer: teamId,                          
+                issuer: settings.TeamId,                          
                 audience: "https://appleid.apple.com",   
-                claims: [new Claim("sub", clientId)],
+                claims: [new Claim("sub", settings.ClientId)],
                 notBefore: now,
                 expires: now.AddDays(daysValid),
                 signingCredentials: credentials
@@ -113,7 +131,7 @@ namespace Smartstore.Apple
 
             if (pem.Contains(header) && pem.Contains(footer))
             {
-                var body = pem.Replace(header, "").Replace(footer, "");
+                var body = pem.Replace(header, string.Empty).Replace(footer, string.Empty);
                 return new string([.. body.Where(c => !char.IsWhiteSpace(c))]);
             }
 

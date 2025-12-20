@@ -63,6 +63,8 @@ namespace Smartstore.Admin.Models.Catalog
 
         [LocalizedDisplay("*ShowManufacturersOnHomepage")]
         public bool ShowManufacturersOnHomepage { get; set; }
+        [LocalizedDisplay("*ShowManufacturersNameAsDescription")]
+        public bool ShowManufacturersNameAsDescription { get; set; }
 
         [LocalizedDisplay("*ShowManufacturersInOffCanvas")]
         public bool ShowManufacturersInOffCanvas { get; set; }

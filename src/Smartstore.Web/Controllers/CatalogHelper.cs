@@ -174,7 +174,7 @@ namespace Smartstore.Web.Controllers
             var model = new BrandModel
             {
                 Id = manufacturer.Id,
-                Name = manufacturer.GetLocalized(x => x.Name),
+                Name = _catalogSettings.ShowManufacturersNameAsDescription ? manufacturer.GetLocalized(x => x.Description) : manufacturer.GetLocalized(x => x.Name),
                 Description = manufacturer.GetLocalized(x => x.Description, detectEmptyHtml: true),
                 BottomDescription = manufacturer.GetLocalized(x => x.BottomDescription, detectEmptyHtml: true),
                 MetaKeywords = manufacturer.GetLocalized(x => x.MetaKeywords),
@@ -287,6 +287,7 @@ namespace Smartstore.Web.Controllers
                 _catalogSettings.ShowManufacturersOnHomepage,
                 _catalogSettings.ShowManufacturerPictures,
                 _catalogSettings.HideManufacturerDefaultPictures,
+                _catalogSettings.ShowManufacturersNameAsDescription,
                 _mediaSettings.ManufacturerThumbPictureSize).ToLower();
 
             var cacheKey = string.Format(ModelCacheInvalidator.MANUFACTURER_NAVIGATION_MODEL_KEY,
@@ -336,7 +337,7 @@ namespace Smartstore.Web.Controllers
                 {
                     files.TryGetValue(manufacturer.MediaFileId ?? 0, out var file);
 
-                    var name = manufacturer.GetLocalized(x => x.Name);
+                    var name = _catalogSettings.ShowManufacturersNameAsDescription ? manufacturer.GetLocalized(x => x.Description) : manufacturer.GetLocalized(x => x.Name);
 
                     model.Brands.Add(new BrandBriefInfoModel
                     {

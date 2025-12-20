@@ -127,6 +127,7 @@ namespace Smartstore.Core.Checkout.Orders
             }
             catch (Exception ex)
             {
+                Logger.LogError(ex, "Order processing failed");
                 await transaction.RollbackAsync(cancelToken);
                 ex.ReThrow();
             }
@@ -484,13 +485,13 @@ namespace Smartstore.Core.Checkout.Orders
             }
 
             // Apply extra data.
-            if (ctx.ExtraData.TryGetValue("CustomerComment", out var customerComment))
+            if (ctx.ExtraData.TryGetValue(CheckoutWorkflow.CustomerCommentKey, out var customerComment))
             {
                 order.CustomerOrderComment = customerComment;
             }
 
-            if (_shoppingCartSettings.ThirdPartyEmailHandOver != CheckoutThirdPartyEmailHandOver.None &&
-                ctx.ExtraData.TryGetValue("AcceptThirdPartyEmailHandOver", out var acceptEmailHandOver))
+            if (_shoppingCartSettings.ThirdPartyEmailHandOver != CheckoutThirdPartyEmailHandOver.None
+                && ctx.ExtraData.TryGetValue(CheckoutWorkflow.AcceptThirdPartyEmailHandOverKey, out var acceptEmailHandOver))
             {
                 order.AcceptThirdPartyEmailHandOver = acceptEmailHandOver.ToBool();
             }
@@ -1051,7 +1052,8 @@ namespace Smartstore.Core.Checkout.Orders
             }
 
             // Newsletter subscription.
-            if (_shoppingCartSettings.NewsletterSubscription != CheckoutNewsletterSubscription.None && ctx.ExtraData.TryGetValue("SubscribeToNewsletter", out var addSubscription))
+            if (_shoppingCartSettings.NewsletterSubscription != CheckoutNewsletterSubscription.None 
+                && ctx.ExtraData.TryGetValue(CheckoutWorkflow.SubscribeToNewsletterKey, out var addSubscription))
             {
                 var email = ctx.Customer.Email ?? ctx.Customer.Addresses.FirstOrDefault().Email;
                 var subscriptionResult = await _newsletterSubscriptionService.ApplySubscriptionAsync(addSubscription.ToBool(), email, order.StoreId);

@@ -2,13 +2,30 @@
 
 ## Smartstore 6.4.0
 
+### Breaking Changes
+
+- (DEV) Removed `AsyncTo*()` extension methods. Use `To*Async()` instead.
+
 ### New Features
+
+- Updated to **.NET 10**
+  - Increased overall performance
+- **Wallet**
+  - Wallet credits can be added to the shopping cart anywhere using a PageBuilder block.
+  - An option has been added to display wallet credit amounts as buttons when purchasing credit.
+- #1445 AI: Create a new image using the Media Manager.
 
 ### Improvements
 
+- Moved AI command tools from Media Manager toolbar to folder dropwdown menu.
+
 ### Bugfixes
 
+- Fixed the payment widget not displaying when payment methods are selected via radio buttons in checkout (the behaviour of icons and radio buttons needs to be equal).
 - PostFinance: Fixed issue with TWINT payments regarding environment selection strategy.
+- #1454 After being assigned to an entity, an image below the dropzone is not displayed.
+- #1455 "Duplicate keys detected: `row-undefined`" in currency grid.
+- Adding new addresses wasn't possible because model state was invalid due to missing email fields for registered customers.
 
 
 ## Smartstore 6.3.0

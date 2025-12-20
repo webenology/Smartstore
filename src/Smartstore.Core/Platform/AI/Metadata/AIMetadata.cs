@@ -1,5 +1,6 @@
 ﻿#nullable enable
 
+using System.Runtime.Serialization;
 using Newtonsoft.Json;
 
 namespace Smartstore.Core.AI.Metadata
@@ -36,6 +37,12 @@ namespace Smartstore.Core.AI.Metadata
         /// List of LLM models available under this provider.
         /// </summary>
         public AIModelCollection Models { get; set; } = default!;
+
+        /// <summary>
+        /// A flag indicating whether this instance is a post-processed clone.
+        /// </summary>
+        [IgnoreDataMember]
+        public bool PostProcessed { get; set; }
 
         #endregion
 

@@ -18,6 +18,9 @@ namespace Smartstore.Core.Checkout.Orders
     public partial class CheckoutWorkflow : ICheckoutWorkflow
     {
         const int _maxWarnings = 3;
+        internal const string CustomerCommentKey = "CustomerComment";
+        internal const string SubscribeToNewsletterKey = "SubscribeToNewsletter";
+        internal const string AcceptThirdPartyEmailHandOverKey = "AcceptThirdPartyEmailHandOver";
 
         private readonly SmartDbContext _db;
         private readonly IStoreContext _storeContext;
@@ -26,6 +29,7 @@ namespace Smartstore.Core.Checkout.Orders
         private readonly IWebHelper _webHelper;
         private readonly IEventPublisher _eventPublisher;
         private readonly IShoppingCartValidator _shoppingCartValidator;
+        private readonly Lazy<IShoppingCartService> _shoppingCartService;
         private readonly IOrderProcessingService _orderProcessingService;
         private readonly IPaymentService _paymentService;
         private readonly ICheckoutFactory _checkoutFactory;
@@ -41,6 +45,7 @@ namespace Smartstore.Core.Checkout.Orders
             IWebHelper webHelper,
             IEventPublisher eventPublisher,
             IShoppingCartValidator shoppingCartValidator,
+            Lazy<IShoppingCartService> shoppingCartService,
             IOrderProcessingService orderProcessingService,
             IPaymentService paymentService,
             ICheckoutFactory checkoutFactory,
@@ -55,6 +60,7 @@ namespace Smartstore.Core.Checkout.Orders
             _webHelper = webHelper;
             _eventPublisher = eventPublisher;
             _shoppingCartValidator = shoppingCartValidator;
+            _shoppingCartService = shoppingCartService;
             _orderProcessingService = orderProcessingService;
             _paymentService = paymentService;
             _checkoutFactory = checkoutFactory;
@@ -161,7 +167,7 @@ namespace Smartstore.Core.Checkout.Orders
                     return result;
                 }
 
-                var adjacentStep = Adjacent(step, context);
+                var adjacentStep = Adjacent(step);
                 if (adjacentStep != null)
                 {
                     return new(adjacentStep.GetActionResult(context), adjacentStep.ViewPath);
@@ -234,6 +240,152 @@ namespace Smartstore.Core.Checkout.Orders
             return new(false);
         }
 
+        public virtual async Task<CheckoutResult> ConfirmPaymentAsync(CheckoutContext context)
+        {
+            Guard.NotNull(context);
+
+            var confirmStep = Guard.NotNull(_checkoutFactory.GetCheckoutStep(CheckoutActionNames.Confirm));
+
+            // INFO: Two cases of error handling here.
+            // 1. Generic checkout error -> Stay on confirmation page and display error in alert box on top.
+            // 2. Payment error -> Redirect to payment selection and display error notification.
+            try
+            {
+                var store = _storeContext.CurrentStore;
+                var customer = context.Cart.Customer;
+                var paymentMethod = customer.GenericAttributes.SelectedPaymentMethod;
+
+                context.HttpContext.Session.TryGetObject<ProcessPaymentRequest>(CheckoutState.OrderPaymentInfoName, out var paymentRequest);
+                paymentRequest ??= new();
+                paymentRequest.StoreId = store.Id;
+                paymentRequest.CustomerId = customer.Id;
+                paymentRequest.PaymentMethodSystemName = paymentMethod;
+
+                var provider = await _paymentService.LoadPaymentProviderBySystemNameAsync(paymentMethod);
+                if (provider == null || !provider.Value.RequiresConfirmation)
+                {
+                    var innerEx = new Exception($"The payment provider {paymentMethod} could not be loaded or does not support payment confirmation.");
+                    return CreateResult(new(T("Payment.CouldNotLoadMethod"), innerEx, paymentMethod), context);
+                }
+
+                var (warnings, _) = await _orderProcessingService.ValidateOrderPlacementAsync(paymentRequest);
+                if (warnings.Count > 0)
+                {
+                    return new(warnings
+                        ?.Take(_maxWarnings)
+                        ?.Select(x => new CheckoutError(string.Empty, HtmlUtility.ConvertPlainTextToHtml(x)))
+                        ?.ToArray());
+                }
+
+                if (!await _orderProcessingService.IsMinimumOrderPlacementIntervalValidAsync(customer, store))
+                {
+                    return new(T("Checkout.MinOrderPlacementInterval"), confirmStep.ViewPath);
+                }
+
+                var url = await provider.Value.GetConfirmationUrlAsync(paymentRequest, context);
+                if (url.IsEmpty())
+                {
+                    var innerEx = new Exception($"Cannot confirm the payment. The payment provider {paymentMethod} did not provide a redirect URL when confirming the payment.");
+                    return CreateResult(new(T("Payment.PaymentFailure"), innerEx, paymentMethod), context);
+                }
+
+                // Keep the form values in the checkout state so that they are not lost when the user is redirected to the payment provider's page.
+                var state = _checkoutStateAccessor.CheckoutState;
+                state.CustomerComment = context.GetFormValue<string>("customercommenthidden");
+                state.SubscribeToNewsletter = context.GetFormValue<bool>(SubscribeToNewsletterKey);
+                state.AcceptThirdPartyEmailHandOver = context.GetFormValue<bool>(AcceptThirdPartyEmailHandOverKey);
+
+                return new(new RedirectResult(url), confirmStep.ViewPath, true);
+            }
+            catch (PaymentException ex)
+            {
+                // TODO: (mg) Test notifier. Probably do not work here. TempData approach required.
+                return CreateResult(ex, context);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex);
+                return new(ex.Message, confirmStep.ViewPath);
+            }
+        }
+
+        public virtual async Task<CheckoutResult> CompletePaymentAsync(CheckoutContext context)
+        {
+            Guard.NotNull(context);
+
+            CheckoutResult result = null;
+            var paymentType = PaymentMethodType.Standard;
+            var confirmStep = Guard.NotNull(_checkoutFactory.GetCheckoutStep(CheckoutActionNames.Confirm));
+
+            try
+            {
+                var store = _storeContext.CurrentStore;
+                var customer = context.Cart.Customer;
+                var paymentMethod = customer.GenericAttributes.SelectedPaymentMethod;
+
+                context.HttpContext.Session.TryGetObject<ProcessPaymentRequest>(CheckoutState.OrderPaymentInfoName, out var paymentRequest);
+                paymentRequest ??= new();
+                paymentRequest.StoreId = store.Id;
+                paymentRequest.CustomerId = customer.Id;
+                paymentRequest.PaymentMethodSystemName = paymentMethod;
+
+                var provider = await _paymentService.LoadPaymentProviderBySystemNameAsync(paymentMethod);
+                paymentType = provider?.Value?.PaymentMethodType ?? PaymentMethodType.Standard;
+
+                if (provider == null || !provider.Value.RequiresConfirmation)
+                {
+                    throw new Exception(T("Payment.CouldNotLoadMethod"),
+                        new Exception($"Cannot complete the payment. The Payment provider {paymentMethod} could not be loaded or does not support payment confirmation."));
+                }
+
+                await provider.Value.CompletePaymentAsync(paymentRequest, context);
+
+                // Payment completed successfully. Place the order.
+                var state = _checkoutStateAccessor.CheckoutState;
+                var placeOrderResult = await _orderProcessingService.PlaceOrderAsync(paymentRequest, new()
+                {
+                    [CustomerCommentKey] = state.CustomerComment,
+                    [SubscribeToNewsletterKey] = state.SubscribeToNewsletter.ToString().ToLower(),
+                    [AcceptThirdPartyEmailHandOverKey] = state.AcceptThirdPartyEmailHandOver.ToString().ToLower()
+                });
+
+                if (placeOrderResult.Success)
+                {
+                    result = new(RedirectToCheckout(CheckoutActionNames.Completed), confirmStep.ViewPath, true);
+                }
+                else
+                {
+                    var cart = context.Cart;
+                    if (customer.Id != paymentRequest.CustomerId)
+                    {
+                        // INFO: The payment provider may have changed the customer through ProcessPaymentRequest.CustomerId.
+                        customer = await _db.Customers.FindByIdAsync(paymentRequest.CustomerId);
+                        cart = await _shoppingCartService.Value.GetCartAsync(customer, ShoppingCartType.ShoppingCart, store.Id);
+                    }
+
+                    if (cart?.HasItems ?? false)
+                    {
+                        // We should never end up here. We have received a payment but the order placement failed!
+                        _logger.Error(new Exception($"The payment with {paymentMethod} succeeded but the order placement failed! Order: {paymentRequest.OrderGuid}. Customer: {cart.Customer.Id}.",
+                            new Exception(string.Join(Environment.NewLine, placeOrderResult.Errors))));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex);
+                _notifier.Error(ex.Message);
+            }
+            finally
+            {
+                context.HttpContext.Session.TrySetObject<ProcessPaymentRequest>(CheckoutState.OrderPaymentInfoName, null);
+                _checkoutStateAccessor.Abandon();
+            }
+
+            result ??= new(paymentType == PaymentMethodType.Button ? RedirectToCart() : RedirectToCheckout(CheckoutActionNames.PaymentMethod), confirmStep.ViewPath);
+            return result;
+        }
+
         public virtual async Task<CheckoutResult> CompleteAsync(CheckoutContext context)
         {
             Guard.NotNull(context);
@@ -274,24 +426,22 @@ namespace Smartstore.Core.Checkout.Orders
                 paymentRequest.CustomerId = cart.Customer.Id;
                 paymentRequest.PaymentMethodSystemName = cart.Customer.GenericAttributes.SelectedPaymentMethod;
 
-                var placeOrderExtraData = new Dictionary<string, string>
+                placeOrderResult = await _orderProcessingService.PlaceOrderAsync(paymentRequest, new()
                 {
-                    ["CustomerComment"] = context.HttpContext.Request.Form["customercommenthidden"].ToString(),
-                    ["SubscribeToNewsletter"] = context.HttpContext.Request.Form["SubscribeToNewsletter"].ToString(),
-                    ["AcceptThirdPartyEmailHandOver"] = context.HttpContext.Request.Form["AcceptThirdPartyEmailHandOver"].ToString()
-                };
-
-                placeOrderResult = await _orderProcessingService.PlaceOrderAsync(paymentRequest, placeOrderExtraData);
+                    [CustomerCommentKey] = context.GetFormValue<string>("customercommenthidden"),
+                    [SubscribeToNewsletterKey] = context.GetFormValue<string>(SubscribeToNewsletterKey),
+                    [AcceptThirdPartyEmailHandOverKey] = context.GetFormValue<string>(AcceptThirdPartyEmailHandOverKey)
+                });
             }
             catch (PaymentException ex)
             {
-                return PaymentFailure(ex);
+                return CreateResult(ex, context);
             }
             catch (Exception ex)
             {
                 _logger.Error(ex);
 
-                return new([new(string.Empty, ex.Message)], confirmStep.ViewPath);
+                return new(ex.Message, confirmStep.ViewPath);
             }
 
             if (placeOrderResult == null || !placeOrderResult.Success)
@@ -315,7 +465,7 @@ namespace Smartstore.Core.Checkout.Orders
             }
             catch (PaymentException ex)
             {
-                return PaymentFailure(ex);
+                return CreateResult(ex, context);
             }
             catch (Exception ex)
             {
@@ -333,32 +483,6 @@ namespace Smartstore.Core.Checkout.Orders
             }
 
             return new(RedirectToCheckout(CheckoutActionNames.Completed));
-
-            CheckoutResult PaymentFailure(PaymentException ex)
-            {
-                if (ex.RedirectRoute is not string)
-                {
-                    _logger.Error(ex);
-                    _notifier.Error(ex.Message);
-                }
-
-                if (ex.RedirectRoute is RouteInfo routeInfo)
-                {
-                    return new(new RedirectToActionResult(routeInfo.Action, routeInfo.Controller, routeInfo.RouteValues));
-                }
-                else if (ex.RedirectRoute is RouteValueDictionary routeValues)
-                {
-                    return new(new RedirectToRouteResult(routeValues));
-                }
-                else if (ex.RedirectRoute is string redirectUrl)
-                {
-                    return new(new RedirectResult(redirectUrl));
-                }
-
-                var paymentStep = _checkoutFactory.GetCheckoutStep(CheckoutActionNames.PaymentMethod);
-
-                return new(paymentStep.GetActionResult(context), paymentStep.ViewPath);
-            }
         }
 
         /// <summary>
@@ -407,7 +531,7 @@ namespace Smartstore.Core.Checkout.Orders
         /// In this case, based on the referrer, the customer must be redirected to the next or previous page,
         /// depending on the direction from which the customer accessed the current page.
         /// </summary>
-        private CheckoutStep Adjacent(CheckoutStep step, CheckoutContext context)
+        private CheckoutStep Adjacent(CheckoutStep step)
         {
             // Get route values of the URL referrer.
             var referrer = _webHelper.GetUrlReferrer();
@@ -452,6 +576,32 @@ namespace Smartstore.Core.Checkout.Orders
             result ??= next ? _checkoutFactory.GetCheckoutStep(CheckoutActionNames.Confirm) : null;
 
             return result;
+        }
+
+        private CheckoutResult CreateResult(PaymentException ex, CheckoutContext context)
+        {
+            if (ex.RedirectRoute is not string)
+            {
+                _logger.Error(ex);
+                _notifier.Error(ex.Message);
+            }
+
+            if (ex.RedirectRoute is RouteInfo routeInfo)
+            {
+                return new(new RedirectToActionResult(routeInfo.Action, routeInfo.Controller, routeInfo.RouteValues));
+            }
+            else if (ex.RedirectRoute is RouteValueDictionary routeValues)
+            {
+                return new(new RedirectToRouteResult(routeValues));
+            }
+            else if (ex.RedirectRoute is string redirectUrl)
+            {
+                return new(new RedirectResult(redirectUrl));
+            }
+
+            var paymentStep = _checkoutFactory.GetCheckoutStep(CheckoutActionNames.PaymentMethod);
+
+            return new(paymentStep.GetActionResult(context), paymentStep.ViewPath);
         }
 
         private static RedirectToActionResult RedirectToCheckout(string action)

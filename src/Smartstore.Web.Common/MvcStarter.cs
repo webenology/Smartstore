@@ -1,4 +1,6 @@
-﻿using Autofac;
+﻿using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
+using Autofac;
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using FluentValidation.Resources;
@@ -49,9 +51,6 @@ namespace Smartstore.Web
 
         public override void ConfigureServices(IServiceCollection services, IApplicationContext appContext)
         {
-            // Add action context accessor
-            services.AddTransient<IActionContextAccessor, ActionContextAccessor>();
-
             services.TryAddEnumerable(
                 ServiceDescriptor.Singleton<IFilterProvider, ConditionalFilterProvider>());
 
@@ -125,10 +124,43 @@ namespace Smartstore.Web
                         o.ViewLocationExpanders.Add(new LanguageViewLocationExpander(LanguageViewLocationExpanderFormat.Suffix));
                     }
                 })
+                .AddJsonOptions(o =>
+                {
+                    var options = o.JsonSerializerOptions;
+                    
+                    // Apply NSJ default policy (which does nothing)
+                    options.PropertyNamingPolicy = null;
+
+                    // Cycles become null'd instead of throwing.
+                    // NSJ: ReferenceLoopHandling.Ignore
+                    options.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+
+                    // STJ supports a global preference (net8+ / net10 docs shown here).
+                    // Replace is the closest equivalent to "create new instance instead of populating existing".
+                    // NSJ: ObjectCreationHandling.Replace
+                    options.PreferredObjectCreationHandling = JsonObjectCreationHandling.Replace;
+
+                    // NSJ: NullValueHandling.Ignore
+                    options.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+
+                    // NSJ: MaxDepth
+                    options.MaxDepth = 32;
+
+                    // Add support for DataContract attributes
+                    options.TypeInfoResolver.WithAddedModifier(DataContractModifiers.ApplyIgnoreDataMember);
+                    options.TypeInfoResolver.WithAddedModifier(DataContractModifiers.ApplyDataMemberNameAndOrder);
+
+                    // Serialize enums as strings, not as ints.
+                    options.Converters.Add(new JsonStringEnumConverter(
+                        namingPolicy: null,
+                        allowIntegerValues: true));
+
+                    options.Converters.Add(new UtcDateTimeJsonConverter());
+                })
                 .AddNewtonsoftJson(o =>
                 {
                     var settings = o.SerializerSettings;
-                    settings.ContractResolver = SmartContractResolver.Instance;
+                    settings.ContractResolver = SmartContractResolver.Default;
                     settings.TypeNameHandling = TypeNameHandling.None;
                     settings.ReferenceLoopHandling = ReferenceLoopHandling.Ignore;
                     settings.ObjectCreationHandling = ObjectCreationHandling.Replace;
@@ -257,28 +289,18 @@ namespace Smartstore.Web
                 return urlHelper;
             }
 
-            var actionContext = c.Resolve<IActionContextAccessor>().ActionContext;
-            if (actionContext != null)
-            {
-                // ActionContext is available (also Endpoint). Resolve EndpointRoutingUrlHelper.
-                return c.Resolve<IUrlHelperFactory>().GetUrlHelper(actionContext);
-            }
-
             // No ActionContext. Create an IUrlHelper that can work outside of routing endpoints (e.g. in middlewares)
-            var routeData = httpContext.GetRouteData();
-            if (routeData == null)
-            {
-                routeData = new RouteData();
-            }
+            var endpoint = httpContext.GetEndpoint();
+            var routeData = httpContext.GetRouteData() ?? new RouteData();
+            var actionDescriptor = endpoint?.Metadata.GetMetadata<ActionDescriptor>() ?? new ActionDescriptor();
 
-            urlHelper = new SmartUrlHelper(
-                new ActionContext(httpContext, routeData, new ActionDescriptor()),
-                c.Resolve<LinkGenerator>());
+            var linkGenerator = c.Resolve<LinkGenerator>();
+            var actionContext = new ActionContext(httpContext, routeData, actionDescriptor);
 
             // Better not to interfere with UrlHelperFactory, so don't save in Items.
-            // httpContext.Items[typeof(IUrlHelper)] = urlHelper;
+            // httpContext.Items[typeof(IUrlHelper)] = new SmartUrlHelper(actionContext, linkGenerator);
 
-            return urlHelper;
+            return new SmartUrlHelper(actionContext, linkGenerator);
         }
 
         internal sealed class RouteOptionsConfigurer : IConfigureOptions<RouteOptions>

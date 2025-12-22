@@ -446,6 +446,85 @@ public partial class CatalogHelper
                 .ToArray();
 
             if (manufacturerFileIds.Length > 0)
+            var categoryIds = categories.Select(x => x.Id).ToList();
+
+            var query = _db.MediaTracks.Where(mt => categoryIds.Contains(mt.EntityId)
+                                                    && mt.EntityName == "Category").Join(_db.MediaFiles,
+                mt => mt.MediaFileId, mf => mf.Id, (mt, mf) => new
+                {
+                    mt.MediaFileId,
+                    mt.EntityId,
+                    mf.Name
+                }).ToList();
+
+            var storeName = _services.StoreContext.CurrentStore.Name;
+
+            var allMediaFilesIds = new List<int>();
+            allMediaFilesIds.AddRange(fileIds);
+            allMediaFilesIds.AddRange(query.Select(x => x.MediaFileId));
+            allMediaFilesIds = allMediaFilesIds.Distinct().ToList();
+
+            var files = (await _mediaService.GetFilesByIdsAsync(allMediaFilesIds.ToArray())).ToDictionarySafe(x => x.Id);
+
+            return await categories
+                .SelectAwait(async c =>
+                {
+                    var name = c.GetLocalized(y => y.Name);
+                    var model = new CategorySummaryModel
+                    {
+                        Id = c.Id,
+                        Name = name
+                    };
+
+                    _services.DisplayControl.Announce(c);
+
+                    // Generate URL.
+                    if (c.ExternalLink.HasValue())
+                    {
+                        var link = await _linkResolver.ResolveAsync(c.ExternalLink);
+                        if (link.Status == LinkStatus.Ok)
+                        {
+                            model.Url = link.Link;
+                        }
+                    }
+
+                    if (model.Url.IsEmpty())
+                    {
+                        model.Url = _urlHelper.RouteUrl(nameof(Category), new { SeName = c.GetActiveSlug() });
+                    }
+
+                    var foundImages = query.Where(x => x.EntityId == c.Id).ToList();
+
+                    files.TryGetValue(c.MediaFileId ?? 0, out var file);
+                    if (foundImages.Any() && foundImages.Count() > 1)
+                    {
+                        var img = foundImages.FirstOrDefault(x =>
+                            x.Name.StartsWith(storeName, StringComparison.OrdinalIgnoreCase));
+                        if (img != null)
+                        {
+                            files.TryGetValue(img.MediaFileId, out file);
+                        }
+                    }
+
+                    model.Image = new ImageModel(file, thumbSize)
+                    {
+                        Title = file?.File?.GetLocalized(x => x.Title)?.Value.NullEmpty() ?? name,
+                        Alt = file?.File?.GetLocalized(x => x.Alt)?.Value.NullEmpty() ?? name,
+                        NoFallback = _catalogSettings.HideCategoryDefaultPictures
+                    };
+
+                    _services.DisplayControl.Announce(file?.File);
+
+                    return model;
+                })
+                .ToListAsync();
+        }
+
+        public async Task<IEnumerable<int>> GetChildCategoryIdsAsync(int parentCategoryId, bool deep = true)
+        {
+            var root = await _menuService.GetRootNodeAsync("Main");
+            var node = root.SelectNodeById(parentCategoryId) ?? root.SelectNode(x => x.Value.EntityId == parentCategoryId);
+            if (node != null)
             {
                 mediaFileLookup = (await _db.MediaFiles
                     .AsNoTracking()
@@ -596,7 +675,44 @@ public partial class CatalogHelper
             return model;
         });
 
-        return cacheModel;
+        #endregion
+
+        #region Cargo Data
+
+        protected async Task<DeliveryTime> GetDeliveryTimeAsync(int id)
+        {
+            if (id == 0) return null;
+
+            var key = $"CatalogHelper.DeliveryTime.{id}";
+            return await _httpRequest.HttpContext.GetItemAsync(key, async () =>
+            {
+                return await _db.DeliveryTimes.FindByIdAsync(id, true);
+            });
+        }
+
+        protected async Task<MeasureWeight> GetMeasureWeightAsync(int id)
+        {
+            if (id == 0) return null;
+
+            var key = $"CatalogHelper.MeasureWeight.{id}";
+            return await _httpRequest.HttpContext.GetItemAsync(key, async () =>
+            {
+                return await _db.MeasureWeights.FindByIdAsync(id, true);
+            });
+        }
+
+        protected async Task<MeasureDimension> GetMeasureDimensionAsync(int id)
+        {
+            if (id == 0) return null;
+
+            var key = $"CatalogHelper.MeasureDimension.{id}";
+            return await _httpRequest.HttpContext.GetItemAsync(key, async () =>
+            {
+                return await _db.MeasureDimensions.FindByIdAsync(id, true);
+            });
+        }
+
+        #endregion
     }
 
     #endregion

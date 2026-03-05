@@ -124,7 +124,429 @@ public partial class CatalogHelper
 
         using (_services.Chronometer.Step("PrepareProductDetailsPageModel"))
         {
-            var model = new ProductDetailsModel
+            Guard.NotNull(product);
+
+            var ctx = await CreateModelContext(product, query);
+            var model = await MapProductDetailsPageModelAsync(ctx);
+
+            // Specifications
+            model.SpecificationAttributes = await PrepareProductSpecificationModelAsync(ctx);
+
+            // Reviews
+            await PrepareProductReviewsModelAsync(model.ProductReviews, product, 10);
+
+            // Tags
+            await PrepareProductTagsModelAsync(model, product);
+
+            // Related products
+            await PrepareRelatedProductsModelAsync(model, product);
+
+            // Also purchased products
+            await PrepareAlsoPurchasedProductsModelAsync(model, product);
+
+            // Custom mapping
+            await MapperFactory.MapWithRegisteredMapperAsync(product, model, new { Context = ctx, Quantity = 1 });
+
+            return model;
+        }
+
+        protected internal virtual async Task<ProductDetailsModel> MapProductDetailsPageModelAsync(ProductDetailsModelContext ctx)
+        {
+            Guard.NotNull(ctx);
+
+            var language = _services.WorkContext.WorkingLanguage;
+            var product = ctx.Product;
+            var query = ctx.VariantQuery;
+            var batchContext = ctx.BatchContext;
+            var isAssociatedProduct = ctx.IsAssociatedProduct;
+            var isBundleItem = ctx.ProductBundleItem != null;
+            var itemType = isAssociatedProduct ? "associateditem" : (isBundleItem ? "bundleitem" : null);
+            var seName = await product.GetActiveSlugAsync();
+
+            using (_services.Chronometer.Step("PrepareProductDetailsPageModel"))
+            {
+                var model = new ProductDetailsModel
+                {
+                    Id = product.Id,
+                    Name = product.GetLocalized(x => x.Name),
+                    ShortDescription = product.GetLocalized(x => x.ShortDescription),
+                    FullDescription = product.GetLocalized(x => x.FullDescription, detectEmptyHtml: true),
+                    MetaKeywords = product.GetLocalized(x => x.MetaKeywords),
+                    MetaDescription = product.GetLocalized(x => x.MetaDescription),
+                    MetaTitle = product.GetLocalized(x => x.MetaTitle),
+                    SeName = seName,
+                    ProductType = product.ProductType,
+                    VisibleIndividually = product.Visibility != ProductVisibility.Hidden,
+                    ReviewCount = product.ApprovedTotalReviews,
+                    DisplayAdminLink = await _services.Permissions.AuthorizeAsync(Permissions.System.AccessBackend, batchContext.Customer),
+                    Condition = product.Condition,
+                    ShowCondition = _catalogSettings.ShowProductCondition,
+                    LocalizedCondition = product.Condition.GetLocalizedEnum(language.Id, false),
+                    ShowSku = _catalogSettings.ShowProductSku,
+                    Sku = product.Sku,
+                    ShowManufacturerPartNumber = _catalogSettings.ShowManufacturerPartNumber,
+                    DisplayProductReviews = _catalogSettings.ShowProductReviewsInProductDetail && product.AllowCustomerReviews,
+                    ManufacturerPartNumber = product.ManufacturerPartNumber,
+                    ShowGtin = _catalogSettings.ShowGtin,
+                    Gtin = product.Gtin,
+                    StockAvailability = product.FormatStockMessage(_localizationService),
+                    HasSampleDownload = product.IsDownload && product.HasSampleDownload,
+                    IsCurrentCustomerRegistered = batchContext.Customer.IsRegistered(),
+                    IsAssociatedProduct = isAssociatedProduct,
+                    CompareEnabled = !isAssociatedProduct && _catalogSettings.CompareProductsEnabled,
+                    TellAFriendEnabled = !isAssociatedProduct && _catalogSettings.EmailAFriendEnabled,
+                    AskQuestionEnabled = !isAssociatedProduct && _catalogSettings.AskQuestionEnabled,
+                    ShowProductTags = _catalogSettings.ShowProductTags,
+                    PictureSize = _mediaSettings.ProductDetailsPictureSize,
+                    HotlineTelephoneNumber = _contactDataSettings.HotlineTelephoneNumber.NullEmpty(),
+                    CanonicalUrl = _seoSettings.CanonicalUrlsEnabled ? _urlHelper.RouteUrl("Product", new { seName }, _httpRequest.Scheme) : null,
+                    UpdateUrl = _urlHelper.Action(nameof(ProductController.UpdateProductDetails), "Product", new
+                    {
+                        itemType,
+                        productId = product.Id,
+                        parentProductId = ctx.ParentProduct?.Id ?? null,
+                        bundleItemId = ctx.ProductBundleItem?.Id ?? 0
+                    })
+                };
+
+                // Determine which description to add the itemprop="description" attribute to, using Model.DescriptionPriority.
+                switch (_seoSettings.ProductDescriptionPriority)
+                {
+                    case ProductDescriptionPriority.FullDescription:
+                        model.HasFullDescriptionSchemaProperty = model.FullDescription.Value.HasValue() && _seoSettings.ProductDescriptionPriority == ProductDescriptionPriority.FullDescription;
+                        model.HasShortDescriptionSchemaProperty = !model.HasFullDescriptionSchemaProperty;
+                        break;
+                    case ProductDescriptionPriority.ShortDescription:
+                        model.HasShortDescriptionSchemaProperty = model.ShortDescription.Value.HasValue() && _seoSettings.ProductDescriptionPriority == ProductDescriptionPriority.ShortDescription;
+                        model.HasFullDescriptionSchemaProperty = !model.HasShortDescriptionSchemaProperty;
+                        break;
+                    case ProductDescriptionPriority.Both:
+                        model.HasFullDescriptionSchemaProperty = true;
+                        model.HasShortDescriptionSchemaProperty = true;
+                        break;
+                }
+
+                #region Bundles / Grouped products
+
+                if (product.ProductType == ProductType.GroupedProduct && !isAssociatedProduct)
+                {
+                    model.GroupedProduct = await CreateGroupedProductModelAsync(ctx, 1);
+                }
+                else if (product.ProductType == ProductType.BundledProduct && !isBundleItem)
+                {
+                    var bundleItems = await batchContext.ProductBundleItems.GetOrLoadAsync(product.Id);
+                    bundleItems = bundleItems.Where(x => x.Product.CanBeBundleItem()).ToList();
+
+                    // Push Ids of bundle items to batch context to save roundtrips
+                    batchContext.Collect(bundleItems.Select(x => x.ProductId).ToArray());
+
+                    foreach (var bundleItem in bundleItems)
+                    {
+                        var bundleItemModel = await MapProductDetailsPageModelAsync(new(ctx)
+                        {
+                            Product = bundleItem.Product,
+                            IsAssociatedProduct = false,
+                            ParentProduct = product,
+                            ProductBundleItem = bundleItem
+                        });
+
+                        bundleItemModel.ShowLegalInfo = false;
+                        bundleItemModel.DeliveryTimesPresentation = DeliveryTimesPresentation.None;
+
+                        bundleItemModel.BundleItem.Id = bundleItem.Id;
+                        bundleItemModel.BundleItem.Quantity = bundleItem.Quantity;
+                        bundleItemModel.BundleItem.HideThumbnail = bundleItem.HideThumbnail;
+                        bundleItemModel.BundleItem.Visible = bundleItem.Visible;
+                        bundleItemModel.BundleItem.IsBundleItemPricing = bundleItem.BundleProduct.BundlePerItemPricing;
+
+                        var bundleItemName = bundleItem.GetLocalized(x => x.Name);
+                        if (bundleItemName.Value.HasValue())
+                        {
+                            bundleItemModel.Name = bundleItemName;
+                        }
+
+                        var bundleItemShortDescription = bundleItem.GetLocalized(x => x.ShortDescription);
+                        if (bundleItemShortDescription.Value.HasValue())
+                        {
+                            bundleItemModel.ShortDescription = bundleItemShortDescription;
+                        }
+
+                        model.BundledItems.Add(bundleItemModel);
+                    }
+                }
+
+                #endregion
+
+                #region Template
+
+                var templateCacheKey = string.Format(ModelCacheInvalidator.PRODUCT_TEMPLATE_MODEL_KEY, product.ProductTemplateId);
+                model.ProductTemplateViewPath = await _services.Cache.GetAsync(templateCacheKey, async () =>
+                {
+                    var template = await _db.ProductTemplates.FindByIdAsync(product.ProductTemplateId, false)
+                        ?? await _db.ProductTemplates.AsNoTracking().OrderBy(x => x.DisplayOrder).FirstOrDefaultAsync();
+
+                    return template.ViewPath;
+                });
+
+                #endregion
+
+                #region Brands
+
+                // Brands
+                if (_catalogSettings.ShowManufacturerInProductDetail)
+                {
+                    var brands = _db.IsCollectionLoaded(product, x => x.ProductManufacturers)
+                        ? product.ProductManufacturers
+                        : await batchContext.ProductManufacturers.GetOrLoadAsync(product.Id);
+
+                    model.Brands = await PrepareBrandOverviewModelAsync(brands, null, _catalogSettings.ShowManufacturerPicturesInProductDetail);
+                }
+
+                #endregion
+
+                #region Review overview
+
+                var review = model.ReviewOverview;
+                review.ProductId = product.Id;
+                review.RatingSum = product.ApprovedRatingSum;
+                review.TotalReviews = product.ApprovedTotalReviews;
+                review.AllowCustomerReviews = product.AllowCustomerReviews;
+
+                if (product.AllowCustomerReviews 
+                    && _rewardPointsSettings.Enabled
+                    && _rewardPointsSettings.ShowPointsForProductReview
+                    && _rewardPointsSettings.PointsForProductReview > 0)
+                {
+                    var rewardAmountBase = _orderCalculationService.Value.ConvertRewardPointsToAmount(_rewardPointsSettings.PointsForProductReview);
+
+                    review.Reward = new()
+                    {
+                        Points = _rewardPointsSettings.PointsForProductReview,
+                        Amount = _currencyService.ConvertFromPrimaryCurrency(rewardAmountBase.Amount, _services.WorkContext.WorkingCurrency)
+                    };
+                }
+
+                #endregion
+
+                #region Giftcard
+
+                // Get gift card values from query string.
+                if (product.IsGiftCard)
+                {
+                    model.GiftCard.RecipientName = query.GetGiftCardValue(product.Id, 0, "RecipientName");
+                    model.GiftCard.RecipientEmail = query.GetGiftCardValue(product.Id, 0, "RecipientEmail");
+                    model.GiftCard.SenderName = query.GetGiftCardValue(product.Id, 0, "SenderName");
+                    model.GiftCard.SenderEmail = query.GetGiftCardValue(product.Id, 0, "SenderEmail");
+                    model.GiftCard.Message = query.GetGiftCardValue(product.Id, 0, "Message");
+                }
+
+                #endregion
+
+                #region Stock subscription
+
+                if (product.ManageInventoryMethod == ManageInventoryMethod.ManageStock &&
+                     product.BackorderMode == BackorderMode.NoBackorders &&
+                     product.AllowBackInStockSubscriptions &&
+                     product.StockQuantity <= 0)
+                {
+                    // Out of stock.
+                    model.DisplayBackInStockSubscription = true;
+                    model.BackInStockAlreadySubscribed = await _stockSubscriptionService.IsSubscribedAsync(product, batchContext.Customer, batchContext.Store.Id);
+                }
+
+                #endregion
+
+                // ----> Core mapper <------
+                await PrepareProductDetailModelAsync(model, ctx, 1);
+
+                #region Action items
+
+                if (model.HasSampleDownload)
+                {
+                    model.ActionItems["sample"] = new ProductDetailsModel.ActionItemModel
+                    {
+                        Key = "sample",
+                        Title = T("Products.DownloadSample"),
+                        CssClass = "action-download-sample",
+                        IconCssClass = "fa fa-download",
+                        Href = _urlHelper.Action("Sample", "Download", new { productId = model.Id }),
+                        IsPrimary = true,
+                        PrimaryActionColor = "danger"
+                    };
+                }
+
+                if (!model.AddToCart.DisableWishlistButton && model.ProductType != ProductType.GroupedProduct)
+                {
+                    model.ActionItems["wishlist"] = new ProductDetailsModel.ActionItemModel
+                    {
+                        Key = "wishlist",
+                        Title = T("ShoppingCart.AddToWishlist.Short"),
+                        Tooltip = T("ShoppingCart.AddToWishlist"),
+                        CssClass = "ajax-cart-link action-add-to-wishlist",
+                        IconCssClass = "icm icm-heart",
+                        Href = _urlHelper.Action("AddProduct", "ShoppingCart", new { productId = model.Id, shoppingCartTypeId = (int)ShoppingCartType.Wishlist })
+                    };
+                }
+
+                if (model.CompareEnabled)
+                {
+                    model.ActionItems["compare"] = new ProductDetailsModel.ActionItemModel
+                    {
+                        Key = "compare",
+                        Title = T("Common.Shopbar.Compare"),
+                        Tooltip = T("Products.Compare.AddToCompareList"),
+                        CssClass = "action-compare ajax-cart-link",
+                        IconCssClass = "icm icm-repeat",
+                        Href = _urlHelper.Action("AddProductToCompare", "Catalog", new { id = model.Id })
+                    };
+                }
+
+                if (model.AskQuestionEnabled && !model.Price.CallForPrice)
+                {
+                    model.ActionItems["ask"] = new ProductDetailsModel.ActionItemModel
+                    {
+                        Key = "ask",
+                        Title = T("Products.AskQuestion.Short"),
+                        Tooltip = T("Products.AskQuestion"),
+                        CssClass = "action-ask-question",
+                        IconCssClass = "icm icm-envelope",
+                        Href = _urlHelper.Action("AskQuestion", new { id = model.Id })
+                    };
+                }
+
+                if (model.TellAFriendEnabled)
+                {
+                    model.ActionItems["tell"] = new ProductDetailsModel.ActionItemModel
+                    {
+                        Key = "tell",
+                        Title = T("Products.EmailAFriend"),
+                        CssClass = "action-bullhorn",
+                        IconCssClass = "icm icm-bullhorn",
+                        Href = _urlHelper.Action("EmailAFriend", new { id = model.Id })
+                    };
+                }
+
+                #endregion
+
+                #region Media
+
+                ICollection<int> combinationFileIds = null;
+                ProductVariantAttributeCombination combination = null;
+
+                if (ctx.ProductBundleItem == null)
+                {
+                    combinationFileIds = await _productAttributeService.GetAttributeCombinationFileIdsAsync(product);
+                    combination ??= model.SelectedCombination;
+                }
+
+                var productMediaFiles = _db.IsCollectionLoaded(product, x => x.ProductMediaFiles)
+                    ? product.ProductMediaFiles
+                    : await batchContext.ProductMediaFiles.GetOrLoadAsync(product.Id);
+
+                var files = productMediaFiles
+                    .Where(x => x.MediaFile != null)
+                    .Select(x => _mediaService.ConvertMediaFile(x.MediaFile))
+                    .ToList();
+
+                if (product.HasPreviewPicture && files.Count > 1)
+                {
+                    files.RemoveAt(0);
+                }
+
+                model.MediaGalleryModel = PrepareProductDetailsMediaGalleryModel(
+                    files, model.Name, combinationFileIds, isAssociatedProduct, ctx.ProductBundleItem, combination);
+
+                #endregion
+
+                return model;
+            }
+        }
+
+        public async Task PrepareProductDetailModelAsync(
+            ProductDetailsModel model, 
+            ProductDetailsModelContext ctx, 
+            int selectedQuantity = 1,
+            bool callCustomMapper = false)
+        {
+            Guard.NotNull(model);
+            Guard.NotNull(ctx);
+
+            var product = ctx.Product;
+
+            // Early, multiple required model properties.
+            model.IsBundlePart = product.ProductType != ProductType.BundledProduct && ctx.ProductBundleItem != null;
+            model.SeName ??= await product.GetActiveSlugAsync();
+
+            // Specifications
+            model.SpecificationAttributes = await PrepareProductSpecificationModelAsync(ctx);
+
+            // Attributes and attribute combination
+            await PrepareProductAttributesModelAsync(model, ctx, selectedQuantity);
+            
+            // Weight requires merge with attribute combination.
+            model.WeightValue = product.Weight;
+
+            // Price
+            await PrepareProductPriceModelAsync(model, ctx, selectedQuantity);
+
+            // General properties (must come after price mapping)
+            await PrepareProductPropertiesModelAsync(model, ctx);
+
+            // AddToCart
+            // INFO: must be executed after PrepareProductPriceModelAsync.
+            await PrepareProductCartModelAsync(model, ctx, selectedQuantity);
+
+            // GiftCards
+            PrepareProductGiftCardsModel(model, ctx);
+
+            // Custom mapping
+            if (callCustomMapper)
+            {
+                await MapperFactory.MapWithRegisteredMapperAsync(product, model, new { Context = ctx, Quantity = selectedQuantity });
+            }
+
+            _services.DisplayControl.Announce(product);
+        }
+
+        public async Task<GroupedProductModel> CreateGroupedProductModelAsync(ProductDetailsModelContext ctx, int pageIndex, string term = null)
+        {
+            Guard.IsTrue(ctx?.Product?.ProductType == ProductType.GroupedProduct);
+
+            pageIndex = Math.Max(0, pageIndex - 1);
+
+            var language = _workContext.WorkingLanguage;
+            var product = ctx.Product;
+            var batchContext = ctx.BatchContext;
+            var config = ctx.GroupedProductConfiguration;
+            var pageSize = config.PageSize ?? _catalogSettings.AssociatedProductsPageSize;
+            var searchFields = term.HasValue() && term.Length >= _searchSettings.InstantSearchTermMinLength 
+                ? _searchSettings.GetSearchFields(true).ToArray()
+                : null;
+
+            var query = new CatalogSearchQuery(searchFields, searchFields != null ? term : null)
+                .BuildFacetMap(false)
+                .Slice(pageIndex * pageSize, pageSize)
+                .VisibleOnly(batchContext.Customer)
+                .HasStoreId(batchContext.Store.Id)
+                .HasParentGroupedProduct(product.Id);
+            var searchResult = await _catalogSearchService.SearchAsync(query);
+
+            ctx.AssociatedProducts = await searchResult.GetHitsAsync();
+
+            // Push IDs of associated products to batch context to avoid roundtrips.
+            batchContext.Collect(ctx.AssociatedProducts.Select(x => x.Id).ToArray());
+
+            var associatedProducts = await ctx.AssociatedProducts
+                .SelectAwait(x => MapProductDetailsPageModelAsync(new(ctx)
+                {
+                    Product = x,
+                    IsAssociatedProduct = true,
+                    ParentProduct = product,
+                    ProductBundleItem = null
+                }))
+                .ToListAsync();
+
+            return new()
             {
                 Id = product.Id,
                 Name = product.GetLocalized(x => x.Name),

@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.0.11205.157
+VisualStudioVersion = 18.3.11310.294
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Smartstore.Web", "src\Smartstore.Web\Smartstore.Web.csproj", "{25E0AA77-1B48-4F6E-B42F-9F428ED968D1}"
 EndProject
@@ -88,6 +88,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Webenology.InventoryPerStore", "src\Smartstore.Modules\Webenology.InventoryPerStore-sym\Webenology.InventoryPerStore.csproj", "{CE6CF1B6-DE92-230B-754A-B3AF6E002B55}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Webenology.EBizCharge", "src\Smartstore.Modules\Webenology.EBizCharge-sym\Webenology.EBizCharge.csproj", "{B8946AE7-08A4-ED1B-A68E-1CB23B976634}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Webenology.StyleSheet", "src\Smartstore.Modules\Webenology.StyleSheet-sym\Webenology.StyleSheet.csproj", "{54D62A9C-FC45-3374-6D7C-3684AF750578}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -294,6 +296,12 @@ Global
 		{B8946AE7-08A4-ED1B-A68E-1CB23B976634}.DebugNoRazorCompile|Any CPU.Build.0 = DebugNoRazorCompile|Any CPU
 		{B8946AE7-08A4-ED1B-A68E-1CB23B976634}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B8946AE7-08A4-ED1B-A68E-1CB23B976634}.Release|Any CPU.Build.0 = Release|Any CPU
+		{54D62A9C-FC45-3374-6D7C-3684AF750578}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{54D62A9C-FC45-3374-6D7C-3684AF750578}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{54D62A9C-FC45-3374-6D7C-3684AF750578}.DebugNoRazorCompile|Any CPU.ActiveCfg = DebugNoRazorCompile|Any CPU
+		{54D62A9C-FC45-3374-6D7C-3684AF750578}.DebugNoRazorCompile|Any CPU.Build.0 = DebugNoRazorCompile|Any CPU
+		{54D62A9C-FC45-3374-6D7C-3684AF750578}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{54D62A9C-FC45-3374-6D7C-3684AF750578}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -328,6 +336,7 @@ Global
 		{ABEEFB4D-505C-EF44-2789-813021838FF2} = {E5C1AA43-6B44-4EFA-8DE9-6070EE007CE3}
 		{CE6CF1B6-DE92-230B-754A-B3AF6E002B55} = {E5C1AA43-6B44-4EFA-8DE9-6070EE007CE3}
 		{B8946AE7-08A4-ED1B-A68E-1CB23B976634} = {E5C1AA43-6B44-4EFA-8DE9-6070EE007CE3}
+		{54D62A9C-FC45-3374-6D7C-3684AF750578} = {E5C1AA43-6B44-4EFA-8DE9-6070EE007CE3}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {A0A0B995-5D0B-458E-BCC0-1071B76949D1}

@@ -6,11 +6,27 @@
 	var controlId = Model.BuildControlId();
 	var label = Model.GetLabel();
 	var description = Model.GetDescription();
+	var isSwatch = Model.AttributeControlType == AttributeControlType.Boxes;
+	var selectedSwatch = isSwatch ? Model.Values?.FirstOrDefault(x => x.IsPreSelected) : null;
+	var selectedSwatchValue = selectedSwatch == null
+		? null
+		: Model.UseCardLayout ? selectedSwatch.GetSwatchDisplayName() : selectedSwatch.GetAccessibleLabel();
+	var emptySwatchValueText = Model.IsRequired ? T("Common.PleaseSelect").Value : T("Common.Unspecified").Value;
+	var swatchValueText = selectedSwatchValue.NullEmpty() ?? emptySwatchValueText;
+	var swatchValueStateClass = selectedSwatchValue.HasValue()
+		? null
+		: Model.IsRequired ? "text-danger" : "text-muted";
+	var choiceLabelClass = "choice-label";
+	if (isSwatch)
+	{
+		choiceLabelClass += " choice-label-swatch";
+	}
+	else if (Model.IsRequired)
+	{
+		choiceLabelClass += " required";
+	}
 
 	var isTextInput = Model.AttributeControlType == AttributeControlType.TextBox || Model.AttributeControlType == AttributeControlType.MultilineTextbox;
-	var isBoxes = Model.AttributeControlType == AttributeControlType.Boxes;
-	var placeholder = T("Common.PleaseSelect").Value;
-	var selectedValueName = Model.SelectedValue?.Name;
 	string templateSuffix = null;
 	switch (Model.AttributeControlType)
 	{
@@ -47,15 +63,26 @@
 		}
 		case AttributeControlType.Boxes:
 		{
-			templateSuffix = "Box";
+			templateSuffix = "Swatch";
 			break;
 		}
 	}
 }
 
 <div class="form-group choice">
-    @*  INFO: label and selected value must not be separated by whitespace, otherwise the colon gets detached.  *@
-    <label class="choice-label@(Model.IsRequired ? " required" : "")@(isBoxes ? " choice-label-inline" : null)" id="choice-label-@Model.Id" for="@controlId">@label</label><span sm-if="isBoxes" class="choice-selected-value" attr-class='(selectedValueName.IsEmpty(), "choice-selected-value-empty")' id="choice-value-@Model.Id" data-placeholder="@placeholder">@(selectedValueName.NullEmpty() ?? placeholder)</span>
+    <label class="@choiceLabelClass" for="@controlId">
+        @if (isSwatch)
+        {
+            <span class="choice-label-name">@(label?.Trim()):</span>
+            <span class="choice-label-value @swatchValueStateClass"
+                  data-swatch-empty-value="@emptySwatchValueText"
+                  data-swatch-empty-class="@swatchValueStateClass">@swatchValueText</span>
+        }
+        else
+        {
+            @label
+        }
+    </label>
     <div sm-if="!isTextInput && description.HasValue()" class="choice-description">
         @Html.Raw(description)
     </div>

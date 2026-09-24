@@ -12,6 +12,7 @@ using Smartstore.Core.Checkout.Cart;
 using Smartstore.Core.Checkout.Tax;
 using Smartstore.Core.Content.Media;
 using Smartstore.Core.Content.Menus;
+using Smartstore.Core.Identity;
 using Smartstore.Core.Localization;
 using Smartstore.Core.Rules;
 using Smartstore.Core.Security;
@@ -19,6 +20,7 @@ using Smartstore.Core.Seo;
 using Smartstore.Core.Stores;
 using Smartstore.Diagnostics;
 using Smartstore.Json;
+using Smartstore.Utilities;
 using Smartstore.Web.Infrastructure.Hooks;
 using Smartstore.Web.Models.Catalog;
 using Smartstore.Web.Models.Catalog.Mappers;
@@ -597,7 +599,14 @@ public partial class CatalogHelper
                 CustomData = attribute.CustomData,
                 IsRequired = attribute.IsRequired,
                 AttributeControlType = attribute.AttributeControlType,
-                AllowedFileExtensions = _catalogSettings.FileUploadAllowedExtensions
+                AllowedFileExtensions = _catalogSettings.FileUploadAllowedExtensions,
+
+                // Frontend prototype controls. Set these per attribute while testing the swatch presentation.
+                SwatchSize = SwatchSize.Medium,
+                SwatchShape = SwatchShape.Rounded,
+                SwatchAspectRatio = 1m,
+                ShowValueNameInSwatch = false,
+                SwatchPriceDisplay = SwatchPriceDisplayMode.None
             };
 
             // Copy queried variant data (entered by customer) to model.
@@ -664,7 +673,6 @@ public partial class CatalogHelper
                         {
                             Id = val.Id,
                             ProductAttributeValue = val,
-                            PriceAdjustment = string.Empty,
                             Name = val.GetLocalized(x => x.Name),
                             Alias = val.Alias,
                             Color = val.Color, // Used with "Boxes" attribute type.
@@ -682,17 +690,11 @@ public partial class CatalogHelper
                         {
                             if (priceAdjustments.TryGetValue(val.Id, out var priceAdjustment))
                             {
-                                m.PriceAdjustmentValue = priceAdjustment.Price.Amount;
-
                                 if (_priceSettings.ShowVariantCombinationPriceAdjustment && !product.CallForPrice)
                                 {
-                                    if (priceAdjustment.Price > 0)
+                                    if (priceAdjustment.Price != 0)
                                     {
-                                        m.PriceAdjustment = $" (+{priceAdjustment.Price})";
-                                    }
-                                    else if (priceAdjustment.Price < 0)
-                                    {
-                                        m.PriceAdjustment = $" (-{priceAdjustment.Price * -1})";
+                                        m.PriceAdjustment = priceAdjustment.Price;
                                     }
                                 }
                             }
@@ -892,7 +894,7 @@ public partial class CatalogHelper
 
                 if (!_priceSettings.ShowVariantCombinationPriceAdjustment)
                 {
-                    value.PriceAdjustment = string.Empty;
+                    value.PriceAdjustment = null;
                 }
 
                 if (checkAvailability)
@@ -979,7 +981,8 @@ public partial class CatalogHelper
         model.HasSampleDownload = product.IsDownload && product.HasSampleDownload;
         model.IsCurrentCustomerRegistered = customer.IsRegistered();
         model.IsBasePriceEnabled = product.BasePriceEnabled && !(isBundle && product.BundlePerItemPricing);
-        model.ShowLegalInfo = !model.IsBundlePart && _taxSettings.ShowLegalHintsInProductDetails;
+        model.LegalInfo = await GetLegalInfo(product, customer, store, model.Price.ShippingSurcharge);
+        model.ShowLegalInfo = !model.IsBundlePart && model.LegalInfo.HasValue();
         model.BundleTitleText = product.GetLocalized(x => x.BundleTitleText);
         model.BundlePerItemPricing = product.BundlePerItemPricing;
         model.BundlePerItemShipping = product.BundlePerItemShipping;
@@ -989,57 +992,6 @@ public partial class CatalogHelper
         basePricePricingOptions.TaxFormat = null;
         model.BasePriceInfo = await _priceCalculationService.GetBasePriceInfoAsync(product, basePricePricingOptions);
 
-        var taxDisplayType = await _services.WorkContext.GetTaxDisplayTypeAsync(customer, store.Id);
-        string taxInfo = T(taxDisplayType == TaxDisplayType.IncludingTax ? "Tax.InclVAT" : "Tax.ExclVAT");
-
-        var defaultTaxRate = string.Empty;
-        if (_taxSettings.DisplayTaxRates)
-        {
-            var taxRate = await _taxService.GetTaxRateAsync(product, customer: customer);
-            if (taxRate.Rate != 0)
-            {
-                var formattedTaxRate = _taxService.FormatTaxRate(taxRate.Rate);
-                defaultTaxRate = $"({formattedTaxRate}%), ";
-            }
-        }
-
-        var additionalShippingCosts = string.Empty;
-        var shippingSurcharge = model.Price.ShippingSurcharge;
-
-        if (shippingSurcharge.GetValueOrDefault() > 0)
-        {
-            additionalShippingCosts = shippingSurcharge.Value.ToString(true) + ", ";
-        }
-
-        if (!product.IsShippingEnabled || product.IsFreeShipping)
-        {
-            model.LegalInfo += product.IsTaxExempt
-                ? T("Common.FreeShipping")
-                : "{0} {1}{2}".FormatInvariant(taxInfo, defaultTaxRate, T("Common.FreeShipping"));
-        }
-        else
-        {
-            var shippingInfoUrl = await _urlHelper.TopicAsync("ShippingInfo");
-
-            if (shippingInfoUrl.IsEmpty())
-            {
-                model.LegalInfo = T("Tax.LegalInfoProductDetail2",
-                    product.IsTaxExempt ? string.Empty : taxInfo,
-                    product.IsTaxExempt ? string.Empty : defaultTaxRate,
-                    additionalShippingCosts);
-            }
-            else
-            {
-                model.LegalInfo = T("Tax.LegalInfoProductDetail",
-                    product.IsTaxExempt ? string.Empty : taxInfo,
-                    product.IsTaxExempt ? string.Empty : defaultTaxRate,
-                    additionalShippingCosts,
-                    shippingInfoUrl);
-            }
-        }
-
-        model.LegalInfo = model.LegalInfo.TrimSafe();
-
         var dimension = await _db.MeasureDimensions.AsNoTracking().FirstOrDefaultAsync(x => x.Id == _measureSettings.BaseDimensionId);
         var weight = await _db.MeasureWeights.AsNoTracking().FirstOrDefaultAsync(x => x.Id == _measureSettings.BaseWeightId);
         var dimensionSystemKeyword = dimension?.SystemKeyword ?? string.Empty;
@@ -1047,8 +999,8 @@ public partial class CatalogHelper
 
         model.Weight = new Measure(model.WeightValue, weightSystemKeyword);
         model.Height = new Measure(product.Height, dimensionSystemKeyword);
-        model.Length = new Measure(product.Length, dimensionSystemKeyword); // (product.Length > 0) ? $"{product.Length:G29} {dimensionSystemKeyword}" : string.Empty;
-        model.Width = new Measure(product.Width, dimensionSystemKeyword); // (product.Width > 0) ? $"{product.Width:G29} {dimensionSystemKeyword}" : string.Empty;
+        model.Length = new Measure(product.Length, dimensionSystemKeyword);
+        model.Width = new Measure(product.Width, dimensionSystemKeyword);
         model.DimensionSystemKeyword = dimensionSystemKeyword;
 
         if (productBundleItem != null)
@@ -1590,6 +1542,72 @@ public partial class CatalogHelper
         }
 
         return model;
+    }
+
+    private async Task<string> GetLegalInfo(
+        Product product,
+        Customer customer,
+        Store store,
+        Money? shippingSurcharge)
+    {
+        using var psb = StringBuilderPool.Instance.Get(out var sb);
+        var legalInfo = _catalogSettings.LegalInfoInProductDetail;
+
+        if (!product.IsTaxExempt && legalInfo.HasFlag(ProductLegalInfo.Tax))
+        {
+            var taxDisplayType = await _services.WorkContext.GetTaxDisplayTypeAsync(customer, store.Id);
+            sb.Append(T(taxDisplayType == TaxDisplayType.IncludingTax ? "Tax.InclVAT" : "Tax.ExclVAT"));
+
+            if (_taxSettings.DisplayTaxRates)
+            {
+                var taxRate = await _taxService.GetTaxRateAsync(product, customer: customer);
+                if (taxRate.Rate != 0)
+                {
+                    var formattedTaxRate = _taxService.FormatTaxRate(taxRate.Rate);
+                    sb.Grow($"({formattedTaxRate}%)");
+                }
+            }
+        }
+
+        var surcharge = shippingSurcharge.GetValueOrDefault() > 0
+            ? shippingSurcharge.Value.WithPostFormat("{0}").ToString(true)
+            : null;
+
+        if (!product.IsShippingEnabled || product.IsFreeShipping)
+        {
+            if (legalInfo.HasFlag(ProductLegalInfo.Shipping))
+            {
+                // Lowercase variant when appended to the tax info.
+                sb.Grow(T(sb.Length > 0 ? "Products.FreeShippingInfo" : "Common.FreeShipping"), ", ");
+            }
+        }
+        else if (legalInfo.HasFlag(ProductLegalInfo.Shipping))
+        {
+            var shippingInfoUrl = await _urlHelper.TopicAsync("ShippingInfo");
+            string shippingInfo;
+
+            if (surcharge != null)
+            {
+                shippingInfo = shippingInfoUrl.HasValue()
+                    ? T("Products.ShippingInfoUrlWithSurcharge", shippingInfoUrl, surcharge)
+                    : T("Products.ShippingInfoWithSurcharge", surcharge);
+            }
+            else
+            {
+                shippingInfo = shippingInfoUrl.HasValue()
+                    ? T("Products.ShippingInfoUrl", shippingInfoUrl)
+                    : T("Products.ShippingInfo");
+            }
+
+            sb.Grow(shippingInfo, ", ");
+        }
+        else if (surcharge != null)
+        {
+            // The shipping surcharge affects the price, so always display it, even if the shipping note is turned off.
+            sb.Grow(T(sb.Length > 0 ? "Products.ShippingSurchargeInfo" : "Common.AdditionalShippingSurcharge", surcharge), ", ");
+        }
+
+        return sb.ToString();
     }
 
     private MediaFileInfo PrepareMediaFileInfo(MediaFileInfo file, MediaGalleryModel model)

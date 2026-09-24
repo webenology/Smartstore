@@ -12,6 +12,8 @@
         var meta = $.metadata ? $.metadata.get(element) : {};
         var opts = this.options = $.extend(true, {}, options, meta || {});
         var updating = false;
+        const swatchLabelRestoreDelay = 150;
+        const swatchScrollPositions = new Map();
 
         this.init = function () {
             var opts = this.options;
@@ -31,6 +33,39 @@
                     return false;
                 }
             });
+
+            $(el)
+                .on('mouseenter focusin', '.swatch', function () {
+                    const swatch = $(this);
+                    const choice = swatch.closest('.choice');
+                    clearSwatchLabelRestore(choice);
+
+                    if (supportsSwatchLabelPreview(swatch)) {
+                        updateSwatchLabel(swatch);
+                    }
+                    else {
+                        restoreSwatchLabel(choice);
+                    }
+                })
+                .on('mouseleave focusout', '.swatch', function (e) {
+                    if (e.type === 'focusout' && e.relatedTarget && $.contains(this, e.relatedTarget)) {
+                        return;
+                    }
+
+                    const swatch = $(this);
+                    if (supportsSwatchLabelPreview(swatch)) {
+                        const choice = swatch.closest('.choice');
+                        if (e.type === 'mouseleave') {
+                            scheduleSwatchLabelRestore(choice);
+                        }
+                        else {
+                            restoreSwatchLabel(choice);
+                        }
+                    }
+                })
+                .on('change', '.swatch-input', function () {
+                    updateSwatchLabel($(this).closest('.swatch'));
+                });
 
             // Update product data and gallery
             $(el).on('change', ':input:not(.skip-pd-ajax-update)', function (e) {
@@ -70,55 +105,127 @@
 
                         if (inputId) {
                             inputCtrl = ctx.find('#' + inputId);
-                            inputCtrl.trigger('focus');
+                            if (inputCtrl.is('.swatch-input')) {
+                                // Restoring focus must not override the row's restored scroll position.
+                                inputCtrl[0].focus({ preventScroll: true });
+                            }
+                            else {
+                                inputCtrl.trigger('focus');
+                            }
                         }
                     }
                 });
             });
 
             self.initAssociatedProducts(associatedProducts);
-            self.initChoiceBoxLabels(el);
+
+            // Track user scrolling so replacement markup can resume at the same position.
+            el[0].addEventListener('scroll', function (event) {
+                if (event.target.matches?.('.swatch-group-cards')) {
+                    const key = getSwatchScrollKey(event.target);
+                    key && swatchScrollPositions.set(key, event.target.scrollLeft);
+                }
+            }, true);
+
+            restoreSwatchScrollPositions(el);
+
+            el.on('shown.bs.collapse', function (event) {
+                // Hidden rows can only be measured after opening.
+                restoreSwatchScrollPositions($(event.target));
+            });
 
             return this;
         };
 
-        // Reflects the hovered or selected value in the caption label above the box list ("Color: red").
-        this.initChoiceBoxLabels = function (root) {
-            function getValueLabel(elBox) {
-                var id = $(elBox).closest('.choice-boxes').attr('id');
-                return id ? $('#' + id.replace('choice-boxes-', 'choice-value-')) : $();
-            }
+        function getSwatchScrollKey(group) {
+            // Input names survive partial replacement and distinguish product/bundle attribute mappings.
+            return group.querySelector('.swatch-input')?.name;
+        }
 
-            function getSelectedName(elBoxes) {
-                return elBoxes
-                    .find('.choice-box-control-native:checked')
-                    .closest('.choice-box')
-                    .find('.choice-box-content')
-                    .data('value-name') || '';
-            }
-
-            function setValue(elLabel, name) {
-                if (!elLabel.length) {
+        function restoreSwatchScrollPositions(ctx) {
+            ctx.find('.swatch-group-cards').each(function () {
+                const key = getSwatchScrollKey(this);
+                if (!key || this.scrollWidth <= this.clientWidth) {
                     return;
                 }
 
-                elLabel
-                    .text(name || elLabel.data('placeholder') || '')
-                    .toggleClass('choice-selected-value-empty', !name);
+                const savedPosition = swatchScrollPositions.get(key);
+                if (savedPosition !== undefined) {
+                    this.scrollLeft = savedPosition;
+                    return;
+                }
+
+                const selected = this.querySelector('.swatch-input:checked')?.closest('.swatch');
+                if (!selected) {
+                    return;
+                }
+
+                const viewport = this.getBoundingClientRect();
+                const bounds = selected.getBoundingClientRect();
+                const style = getComputedStyle(this);
+                // Keep the selected outline inside the row padding and move only as far as needed.
+                const left = viewport.left + parseFloat(style.paddingLeft);
+                const right = viewport.right - parseFloat(style.paddingRight);
+                this.scrollLeft += bounds.left < left ? bounds.left - left : Math.max(0, bounds.right - right);
+            });
+        }
+
+        function updateSwatchLabel(swatch) {
+            const selection = swatch.closest('.choice').find('.choice-label-value').first();
+
+            if (!selection.length) {
+                return;
             }
 
-            $(root)
-                .on('mouseenter focusin', '.pd-variants .choice-box', function () {
-                    setValue(getValueLabel(this), $(this).find('.choice-box-content').data('value-name'));
-                })
-                .on('mouseleave focusout', '.pd-variants .choice-box', function () {
-                    setValue(getValueLabel(this), getSelectedName($(this).closest('.choice-boxes')));
-                })
-                .on('change', '.pd-variants .choice-box-control-native', function () {
-                    // Instant feedback. The AJAX update re-renders the partial server-side afterwards.
-                    setValue(getValueLabel(this), getSelectedName($(this).closest('.choice-boxes')));
-                });
-        };
+            const valueName = swatch.data('swatch-value') || '';
+            if (valueName) {
+                selection
+                    .removeClass('text-danger text-muted')
+                    .text(valueName);
+            }
+        }
+
+        function supportsSwatchLabelPreview(swatch) {
+            // Non-card swatches use the dynamic label as their visible replacement for the former tooltip.
+            return !swatch.find('.swatch-card').length;
+        }
+
+        function clearSwatchLabelRestore(choice) {
+            const timer = choice.data('swatch-label-restore-timer');
+
+            if (timer) {
+                window.clearTimeout(timer);
+                choice.removeData('swatch-label-restore-timer');
+            }
+        }
+
+        function scheduleSwatchLabelRestore(choice) {
+            clearSwatchLabelRestore(choice);
+
+            const timer = window.setTimeout(function () {
+                choice.removeData('swatch-label-restore-timer');
+                restoreSwatchLabel(choice);
+            }, swatchLabelRestoreDelay);
+
+            choice.data('swatch-label-restore-timer', timer);
+        }
+
+        function restoreSwatchLabel(choice) {
+            const selectedSwatch = choice.find('.swatch-input:checked').closest('.swatch');
+
+            if (selectedSwatch.length) {
+                updateSwatchLabel(selectedSwatch);
+                return;
+            }
+
+            const selection = choice.find('.choice-label-value').first();
+            const emptyClass = selection.attr('data-swatch-empty-class');
+
+            selection
+                .removeClass('text-danger text-muted')
+                .addClass(emptyClass || '')
+                .text(selection.attr('data-swatch-empty-value') || '');
+        }
 
         this.initAssociatedProducts = function (associatedProducts) {
             if (!associatedProducts.length || !associatedProducts.find('.pd-assoc-list').length) {
@@ -133,7 +240,7 @@
                 if (!$(e.target).closest('.pd-interaction').length) {
                     $($(this).data('target')).collapse('toggle');
                 }
-            }).on('show.bs.collapse shown.bs.collapse hide.bs.collapse', function (e) {
+            }).on('show.bs.collapse shown.bs.collapse hide.bs.collapse', '.pd-assoc > .collapse', function (e) {
                 if (e.type === 'shown') {
                     if (elError !== null) {
                         scrollToCard(elError);
@@ -141,8 +248,19 @@
                     }
                 }
                 else {
-                    // Toggle 'collapsed' class to display correct chevron.
-                    $(e.target).prev().toggleClass('collapsed', e.type === 'hide');
+                    const expanded = e.type === 'show';
+                    const header = $(e.target).prev('.pd-assoc-header');
+                    const syncHeader = () => header
+                        .toggleClass('collapsed', !expanded)
+                        .attr('aria-expanded', expanded);
+
+                    // Bootstrap adds .collapsing after the hide event. Defer the closed state so opacity can transition.
+                    if (expanded) {
+                        syncHeader();
+                    }
+                    else {
+                        requestAnimationFrame(syncHeader);
+                    }
                 }
             });
 
@@ -205,6 +323,8 @@
             });
 
             applyCommonPlugins(ctx);
+            // Restore after plugins have initialized the replacement markup and its layout.
+            restoreSwatchScrollPositions(ctx);
 
             ctx.find(".pd-tierprices").html(data.Partials["TierPrices"]);
 

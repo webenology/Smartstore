@@ -1,5 +1,7 @@
 /// <reference path="references.scss" />
 
+@use "sass:color";
+
 $btn-wide-padding-x: 1.8rem;
 $btn-wide-padding-x-lg: 2.5rem;
 $btn-wide-padding-x-sm: 1.2rem;
@@ -282,7 +284,7 @@ button:where(.reset) {
     --btn-disabled-bg: var(--btn-bg);
     --btn-disabled-border-color: var(--btn-border-color);
     --btn-hover-color: #{darken($yiq-text-dark, 8%)};
-    --btn-hover-bg: #{rgba(#000, 0.06)};
+    --btn-hover-bg: #{rgba(#000, 0.05)};
     --btn-hover-border-color: #{rgba(#000, 0.1)};
     --btn-active-color: var(--btn-hover-color);
     --btn-active-bg: #{rgba(#000, 0.08)};
@@ -481,7 +483,7 @@ button:where(.reset) {
     .btn-3d.btn-#{$color},
     .btn-3d.btn-outline-#{$color} {
         @if $color != "secondary" and $color != "light" {
-            $c: mix($value, $black, 50%);
+            $c: color.mix($value, $black, 50%);
             --shadow-color-rgb: #{to-rgb($c)};
             --shadow-intensity: 1.8;
         }

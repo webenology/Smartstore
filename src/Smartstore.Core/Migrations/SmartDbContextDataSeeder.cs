@@ -1,4 +1,9 @@
+using Smartstore.Core.Catalog;
+using Smartstore.Core.Catalog.Products;
+using Smartstore.Core.Common.Configuration;
+using Smartstore.Core.Configuration;
 using Smartstore.Data.Migrations;
+using Smartstore.Utilities;
 
 namespace Smartstore.Core.Data.Migrations;
 
@@ -11,14 +16,96 @@ public class SmartDbContextDataSeeder : IDataSeeder<SmartDbContext>
     {
         await context.MigrateLocaleResourcesAsync(MigrateLocaleResources);
         await MigrateSettingsAsync(context, cancelToken);
+        await MigrateMessageTemplatesAsync(context, cancelToken);
     }
 
     public async Task MigrateSettingsAsync(SmartDbContext context, CancellationToken cancelToken = default)
     {
+        await context.MigrateSettingsAsync(builder =>
+        {
+            builder.Add(TypeHelper.NameOf<PerformanceSettings>(x => x.KeepSassCompilerInMemory, true), "False");
+        });
+
+        var settings = context.Set<Setting>();
+        const string oldName1 = "TaxSettings.ShowLegalHintsInProductDetails";
+        const string oldName2 = "TaxSettings.ShowLegalHintsInProductList";
+
+        var oldSettings = await settings
+            .Where(x => x.Name == oldName1 || x.Name == oldName2)
+            .ToListAsync(cancelToken);
+        var oldSettings1 = oldSettings.Where(x => x.Name == oldName1).ToList();
+        var oldSettings2 = oldSettings.Where(x => x.Name == oldName2).ToList();
+
+        await MigrateLegalInfo(oldSettings1, TypeHelper.NameOf<CatalogSettings>(x => x.LegalInfoInProductDetail, true));
+        await MigrateLegalInfo(oldSettings2, TypeHelper.NameOf<CatalogSettings>(x => x.LegalInfoInLists, true));
+
+        if (oldSettings1.Count > 0 || oldSettings2.Count > 0)
+        {
+            await context.SaveChangesAsync(cancelToken);
+        }
+
+        async Task MigrateLegalInfo(List<Setting> oldSettings, string newName)
+        {
+            if (oldSettings.Count == 0)
+            {
+                return;
+            }
+
+            var storeIds = oldSettings.ToDistinctArray(x => x.StoreId);
+            var existingNewSettings = await settings
+                .Where(x => x.Name == newName && storeIds.Contains(x.StoreId))
+                .Select(x => x.StoreId)
+                .ToListAsync(cancelToken);
+
+            foreach (var oldSetting in oldSettings.Where(x => !existingNewSettings.Contains(x.StoreId)))
+            {
+                settings.Add(new()
+                {
+                    Name = newName,
+                    StoreId = oldSetting.StoreId,
+                    Value = (oldSetting.Value.Convert<bool>() ? ProductLegalInfo.All : ProductLegalInfo.None).Convert(string.Empty)
+                });
+            }
+
+            settings.RemoveRange(oldSettings);
+        }
+    }
+
+    public async Task MigrateMessageTemplatesAsync(SmartDbContext context, CancellationToken cancelToken = default)
+    {
+        var save = false;
+        var withdrawalTemplates = await context.MessageTemplates
+            .Where(x => x.Name == "Withdrawal.CustomerNotification" || x.Name == "Withdrawal.MerchantNotification" || x.Name == "Withdrawal.ProceedLink")
+            .ToListAsync(cancelToken);
+
+        foreach (var template in withdrawalTemplates)
+        {
+            var modelNames = template.ModelTypes.SplitSafe(',').Distinct().ToArray();
+            if (!modelNames.Contains("Order"))
+            {
+                template.ModelTypes = template.ModelTypes.Grow("Order", ", ");
+                save = true;
+            }
+        }
+
+        if (save)
+        {
+            await context.SaveChangesAsync(cancelToken);
+        }
     }
 
     public void MigrateLocaleResources(LocaleResourcesBuilder builder)
     {
+        builder.AddOrUpdate("Admin.Configuration.Themes.Option.KeepSassCompilerInMemory",
+            "Keep Sass compiler in memory",
+            "Sass-Compiler im Arbeitsspeicher halten",
+            "Recommended while actively editing Sass files or changing theme variables in the admin area. Keeping the Dart Sass compiler running speeds up repeated compilations but uses additional memory. Otherwise, leave this disabled; an unused compiler is stopped after a short idle period.",
+            "Empfohlen, wenn Sie gerade intensiv Sass-Dateien bearbeiten oder Theme-Variablen im Backend ändern. Der Dart-Sass-Compiler bleibt aktiv und beschleunigt wiederholte Kompilierungen, benötigt aber zusätzlichen Arbeitsspeicher. Ansonsten deaktiviert lassen; ein ungenutzter Compiler wird nach kurzer Zeit beendet.");
+
+        builder.Delete(
+            "Admin.Configuration.Settings.Performance.KeepSassCompilerInMemory",
+            "Admin.Configuration.Settings.Performance.KeepSassCompilerInMemory.Hint");
+
         builder.Delete(
             "Admin.Orders.Products.AddNew.UnitPriceInclTax.Hint",
             "Admin.Orders.Products.AddNew.UnitPriceExclTax.Hint",
@@ -72,6 +159,10 @@ public class SmartDbContextDataSeeder : IDataSeeder<SmartDbContext>
             "Legt fest, ob nur Objekte, die veröffentlicht wurden, exportiert werden, sofern das Objekt eine Einstellung zur Veröffentlichung besitzt.");
 
         builder.AddOrUpdate("Footer.Info", "Information", "Informationen");
+
+        builder.AddOrUpdate("Smartstore.AI.Prompts.DontUseHtml",
+            "Return plain text only. Do not use HTML tags.",
+            "Gib ausschließlich Klartext zurück. Verwende keine HTML-Tags.");
 
         builder.AddOrUpdate("ReturnCase.WithdrawEntireOrder",
             "I want to withdraw the contract for the entire order:",
@@ -134,5 +225,77 @@ public class SmartDbContextDataSeeder : IDataSeeder<SmartDbContext>
         builder.AddOrUpdate("ActivityLog.DeleteProduct",
             "Product ('{0}') has been moved to the recycle bin",
             "Produkt ('{0}') in den Papierkorb verschoben");
+
+        builder.AddOrUpdate("Admin.Configuration.Settings.Price.RulesCalculateIncludingTax",
+            "Cart rules calculate amounts including tax",
+            "Warenkorbregeln berechnen Beträge inklusive Steuer",
+            "Specifies whether shopping cart rules calculate amounts as inclusive of or exclusive of tax. If not specified (default), the tax settings for the respective shopping cart or customer apply.",
+            "Legt fest, ob Warenkorbregeln die Beträge inklusive oder exklusive Umsatzsteuer berechnen. Falls nicht festgelegt (Standard), gelten die Steuereinstellungen des jeweiligen Warenkorbs bzw. Kunden.");
+
+        #region product legal info
+
+        builder.AddOrUpdate("Products.ShippingInfo",
+            "plus shipping",
+            "zzgl. Versandkosten");
+
+        builder.AddOrUpdate("Products.ShippingInfoUrl",
+            "plus <a href=\"{0}\">shipping</a>",
+            "zzgl. <a href=\"{0}\">Versandkosten</a>");
+
+        builder.AddOrUpdate("Products.ShippingInfoWithSurcharge",
+            "plus shipping and a <b>{0}</b> shipping surcharge",
+            "zzgl. Versandkosten und <b>{0}</b> Versandaufschlag");
+
+        builder.AddOrUpdate("Products.ShippingInfoUrlWithSurcharge",
+            "plus <a href=\"{0}\">shipping</a> and a <b>{1}</b> shipping surcharge",
+            "zzgl. <a href=\"{0}\">Versandkosten</a> und <b>{1}</b> Versandaufschlag");
+
+        builder.AddOrUpdate("Products.ShippingSurchargeInfo",
+            "plus <b>{0}</b> shipping surcharge",
+            "zzgl. <b>{0}</b> Versandaufschlag");
+
+        builder.AddOrUpdate("Products.FreeShippingInfo",
+            "free shipping",
+            "versandkostenfrei");
+
+        builder.AddOrUpdate("Products.TaxLegalInfo", "Prices {0}", "Preise {0}");
+
+        builder.AddOrUpdate("Common.AdditionalShippingSurcharge",
+            "Plus <b>{0}</b> shipping surcharge",
+            "zzgl. <b>{0}</b> Versandaufschlag");
+
+        builder.AddOrUpdate("Admin.Configuration.Settings.Catalog.LegalInfoInProductDetail",
+            "Legal information on product page",
+            "Rechtliche Hinweise auf der Produktseite",
+            "Specifies which tax and shipping cost notes are displayed on the product page. If nothing is selected, no note is displayed. An additional shipping charge is always displayed.",
+            "Legt fest, welche Hinweise zu Steuer und Versandkosten auf der Produktseite angezeigt werden. Ohne Auswahl wird kein Hinweis angezeigt. Ein Transportzuschlag wird immer angezeigt.");
+
+        builder.AddOrUpdate("Admin.Configuration.Settings.Catalog.LegalInfoInLists",
+            "Legal information in product lists",
+            "Rechtliche Hinweise in Produktlisten",
+            "Specifies which tax and shipping cost notes are displayed in the list view and in the product comparison. If nothing is selected, no note is displayed.",
+            "Legt fest, welche Hinweise zu Steuer und Versandkosten in der Listenansicht und im Produktvergleich angezeigt werden. Ohne Auswahl wird kein Hinweis angezeigt.");
+
+        builder.AddOrUpdate("Enums.ProductLegalInfo.Tax", "Tax note (incl./excl. VAT)", "Steuerhinweis (inkl./zzgl. MwSt.)");
+        builder.AddOrUpdate("Enums.ProductLegalInfo.Shipping", "Shipping cost note", "Versandkostenhinweis");
+
+        builder.Delete(
+            "Tax.LegalInfoProductDetail",
+            "Tax.LegalInfoProductDetail2",
+            "Tax.LegalInfoShort",
+            "Tax.LegalInfoShort2",
+            "Tax.LegalInfoShort3",
+            "Admin.Configuration.Settings.Tax.ShowLegalHintsInProductDetails",
+            "Admin.Configuration.Settings.Tax.ShowLegalHintsInProductDetails.Hint",
+            "Admin.Configuration.Settings.Tax.ShowLegalHintsInProductList",
+            "Admin.Configuration.Settings.Tax.ShowLegalHintsInProductList.Hint",
+            "Admin.Configuration.Settings.Tax.ShowLegalHintsInProductGrid",
+            "Admin.Configuration.Settings.Tax.ShowLegalHintsInProductGrid.Hint");
+
+        #endregion
+
+        builder.AddOrUpdate("Products.EmailAFriend.LoginNote",
+            "Please log in to use this function. <a href=\"{0}\" rel=\"nofollow\">Login now</a>",
+            "Bitte melden Sie sich an, um diese Funktion nutzen zu können. <a href=\"{0}\" rel=\"nofollow\">Jetzt anmelden</a>");
     }
 }

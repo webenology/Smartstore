@@ -10,6 +10,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+
 		<ProjectReference Include="..\Smartstore.Packager.Common\Smartstore.Packager.Common.csproj" />
 		<ProjectReference Include="..\..\src\Smartstore\Smartstore.csproj" />
 	    <ProjectReference Include="..\..\src\Smartstore.Core\Smartstore.Core.csproj">
@@ -17,6 +18,7 @@
 			<ExcludeAssets>native</ExcludeAssets>
 			<PrivateAssets>none</PrivateAssets>
 	    </ProjectReference>
+
     </ItemGroup>
 
     <ItemGroup>

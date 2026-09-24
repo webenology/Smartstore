@@ -49,11 +49,11 @@ internal class ByRegionTaxProvider : ITaxProvider, IConfigurable
             .ToListAsync();
 
         var matchedByCountry = allTaxRates
-            .Where(x => x.CountryId == request.Address.CountryId && x.TaxCategoryId == request.TaxCategoryId)
+            .Where(x => x.CountryId == (request.Address?.CountryId ?? -1) && x.TaxCategoryId == request.TaxCategoryId)
             .ToList();
 
         var matchedByStateProvince = matchedByCountry
-            .Where(x => x.StateProvinceId == request.Address.StateProvinceId)
+            .Where(x => x.StateProvinceId == (request.Address?.StateProvinceId ?? -1))
             .ToList();
 
         if (matchedByStateProvince.Count == 0)
@@ -62,10 +62,10 @@ internal class ByRegionTaxProvider : ITaxProvider, IConfigurable
         }
 
         var matchedByZip = matchedByStateProvince
-            .Where(x => x.Zip == request.Address.ZipPostalCode)
+            .Where(x => x.Zip == request.Address?.ZipPostalCode)
             .ToList();
 
-        if (matchedByZip.Count == 0 || !request.Address.ZipPostalCode.HasValue())
+        if (matchedByZip.Count == 0 || !(request.Address?.ZipPostalCode.HasValue() ?? false))
         {
             matchedByZip.AddRange(matchedByStateProvince.Where(x => string.IsNullOrEmpty(x.Zip)));
         }

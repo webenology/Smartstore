@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="../../src/Smartstore.Core/Smartstore.Core.csproj" />
+  <Project Path="../../src/Smartstore/Smartstore.csproj" />
+  <Project Path="Smartstore.Packager.csproj" />
+</Solution>

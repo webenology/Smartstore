@@ -257,6 +257,10 @@
         "order_totals_before",
         "order_totals_after"
       ]
+    },
+    {
+      "name": "GCD Theme",
+      "zones": [ "webenology_menu_before" ]
     }
   ]
 }
